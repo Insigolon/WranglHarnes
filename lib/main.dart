@@ -51,7 +51,17 @@ const double _kMenuStart = _kArcStart + _kButtonSweep;
 const double _kMenuEnd = _kArcEnd - _kButtonSweep;
 const int _kVisibleAppCount = 9;
 
-double _rad(double d) => d * math.pi / 180;
+const double _kDegToRad = math.pi / 180;
+const double _kArcStartRad = _kArcStart * _kDegToRad;
+const double _kArcEndRad = _kArcEnd * _kDegToRad;
+const double _kMenuStartRad = _kMenuStart * _kDegToRad;
+const double _kMenuEndRad = _kMenuEnd * _kDegToRad;
+const double _kArcSpanRad = _kArcEndRad - _kArcStartRad;
+const double _kMenuSpanRad = _kMenuEndRad - _kMenuStartRad;
+const double _kInnerR2 = _kInnerR * _kInnerR;
+const double _kOuterR2 = _kOuterR * _kOuterR;
+
+final double _kArcRightReach = _kOuterR * math.cos(_kArcEndRad);
 
 class RadialLauncher extends StatefulWidget {
   const RadialLauncher({super.key});
@@ -62,9 +72,9 @@ class RadialLauncher extends StatefulWidget {
 
 class _State extends State<RadialLauncher> with TickerProviderStateMixin {
   bool _open = false;
-  String? _sel;
+  int? _selSlot;
   int _offset = 0;
-  int _lastNudgeMs = 0;
+  final Stopwatch _pageStopwatch = Stopwatch()..start();
 
   late final AnimationController _ctrl = AnimationController(
     vsync: this,
@@ -76,7 +86,10 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
   );
 
   void _toggle() {
-    setState(() => _open = !_open);
+    setState(() {
+      _open = !_open;
+      if (!_open) _selSlot = null;
+    });
     _open ? _ctrl.forward() : _ctrl.reverse();
   }
 
@@ -90,15 +103,26 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
     _updateHover(d.localPosition, anchor);
   }
 
-  void _panEnd(DragEndDetails d) {}
+  void _panEnd(DragEndDetails d) {
+    if (!_open) return;
+    final vx = d.velocity.pixelsPerSecond.dx;
+    if (vx.abs() < 650) return;
+    _nudge(vx > 0 ? 1 : -1, clearSelection: true);
+  }
 
-  void _nudge(int d) => setState(() => _offset += d);
+  void _nudge(int d, {bool clearSelection = false}) {
+    final total = _kApps.length;
+    if (total == 0) return;
+    setState(() {
+      _offset = (_offset + d) % total;
+      if (clearSelection) _selSlot = null;
+    });
+  }
 
   void _pageByDrag(int d) {
-    final now = DateTime.now().millisecondsSinceEpoch;
-    if (now - _lastNudgeMs < 220) return;
-    _lastNudgeMs = now;
-    _nudge(d);
+    if (_pageStopwatch.elapsedMilliseconds < 220) return;
+    _pageStopwatch.reset();
+    _nudge(d, clearSelection: true);
   }
 
   void _updateHover(
@@ -108,32 +132,32 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
   }) {
     final dx = localPosition.dx - anchor.dx;
     final dy = localPosition.dy - anchor.dy;
-    final dist = math.sqrt(dx * dx + dy * dy);
-    final ang = (math.atan2(dy, dx) * 180 / math.pi + 360) % 360;
-    if (dist < _kInnerR ||
-        dist > _kOuterR ||
-        ang < _kArcStart - 2 ||
-        ang > _kArcEnd + 2) {
-      setState(() => _sel = null);
+    final distSq = dx * dx + dy * dy;
+    final ang = (math.atan2(dy, dx) + math.pi * 2) % (math.pi * 2);
+    if (distSq < _kInnerR2 ||
+        distSq > _kOuterR2 ||
+        ang < _kArcStartRad ||
+        ang > _kArcEndRad) {
+      if (_selSlot != null) setState(() => _selSlot = null);
       return;
     }
 
-    if (ang < _kMenuStart) {
-      allowPaging ? _pageByDrag(-1) : _nudge(-1);
+    if (ang < _kMenuStartRad) {
+      allowPaging ? _pageByDrag(-1) : _nudge(-1, clearSelection: true);
       return;
     }
-    if (ang > _kMenuEnd) {
-      allowPaging ? _pageByDrag(1) : _nudge(1);
+    if (ang > _kMenuEndRad) {
+      allowPaging ? _pageByDrag(1) : _nudge(1, clearSelection: true);
       return;
     }
 
     final total = _kApps.length;
     final visible = math.min(_kVisibleAppCount, total);
-    final i = (((ang - _kMenuStart) / (_kMenuEnd - _kMenuStart)) * visible)
+    if (visible == 0) return;
+    final slot = (((ang - _kMenuStartRad) / _kMenuSpanRad) * visible)
         .floor()
         .clamp(0, visible - 1);
-    final idx = ((i + _offset) % total + total) % total;
-    setState(() => _sel = _kApps[idx].id);
+    if (_selSlot != slot) setState(() => _selSlot = slot);
   }
 
   void _tap(TapDownDetails d, Offset anchor) {
@@ -141,52 +165,61 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
     _updateHover(d.localPosition, anchor, allowPaging: false);
   }
 
+  Offset _computeAnchor(BoxConstraints c) {
+    return Offset(
+      math.max(
+        _kOuterR + _kCornerInset,
+        c.maxWidth - _kArcRightReach - _kCornerInset,
+      ),
+      c.maxHeight - _kHubR - _kCornerInset,
+    );
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (_, c) {
-        final arcRightReach = _kOuterR * math.cos(_rad(360 - _kArcEnd));
-        final anchor = Offset(
-          math.max(
-            _kOuterR + _kCornerInset,
-            c.maxWidth - arcRightReach - _kCornerInset,
-          ),
-          c.maxHeight - _kHubR - _kCornerInset,
-        );
-        return AnimatedBuilder(
-          animation: _anim,
-          builder: (_, _) => GestureDetector(
-            onDoubleTap: _toggle,
-            onPanStart: (d) => _panStart(d, anchor),
-            onPanUpdate: (d) => _pan(d, anchor),
-            onPanEnd: _panEnd,
-            onTapDown: (d) => _tap(d, anchor),
-            child: Stack(
-              clipBehavior: Clip.none,
-              children: [
-                if (_anim.value > 0)
-                  RepaintBoundary(
+        final anchor = _computeAnchor(c);
+        return GestureDetector(
+          onDoubleTap: _toggle,
+          onPanStart: (d) => _panStart(d, anchor),
+          onPanUpdate: (d) => _pan(d, anchor),
+          onPanEnd: _panEnd,
+          onTapDown: (d) => _tap(d, anchor),
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Positioned.fill(
+                child: FadeTransition(
+                  opacity: _anim,
+                  child: RepaintBoundary(
                     child: CustomPaint(
-                      size: Size.infinite,
                       painter: _Painter(
                         anchor: anchor,
-                        t: _anim.value,
                         apps: _kApps,
                         offset: _offset,
-                        sel: _sel,
+                        selectedSlot: _selSlot,
                       ),
+                      child: const SizedBox.expand(),
                     ),
                   ),
-                Positioned(
-                  left: anchor.dx - _kHubR,
-                  top: anchor.dy - _kHubR,
-                  child: GestureDetector(
-                    onDoubleTap: _toggle,
-                    child: const _Hub(),
-                  ),
                 ),
-              ],
-            ),
+              ),
+              Positioned(
+                left: anchor.dx - _kHubR,
+                top: anchor.dy - _kHubR,
+                child: GestureDetector(
+                  onDoubleTap: _toggle,
+                  child: const _Hub(),
+                ),
+              ),
+            ],
           ),
         );
       },
@@ -215,74 +248,91 @@ class _Hub extends StatelessWidget {
   );
 }
 
+class _LabelLayout {
+  final AppEntry app;
+  final int slot;
+  final double midRad;
+  final Offset center;
+  final TextPainter painter;
+
+  const _LabelLayout({
+    required this.app,
+    required this.slot,
+    required this.midRad,
+    required this.center,
+    required this.painter,
+  });
+}
+
 class _Painter extends CustomPainter {
+  static final Paint _dividerPaint = Paint()
+    ..color = const Color(0xFF555555)
+    ..strokeWidth = 4.5 * _kLauncherScale
+    ..strokeCap = StrokeCap.round;
+  static final Paint _previewShadowPaint = Paint()
+    ..color = Colors.black.withValues(alpha: 0.35)
+    ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8 * _kLauncherScale);
+  static final Paint _previewFillPaint = Paint()
+    ..color = const Color(0xFFD9D9D9);
+  static final Paint _bgShadowPaint = Paint()
+    ..color = Colors.black.withValues(alpha: 0.4)
+    ..maskFilter = const MaskFilter.blur(
+      BlurStyle.normal,
+      10 * _kLauncherScale,
+    );
+  static final Paint _bgFillPaint = Paint()..color = const Color(0xFFD9D9D9);
+  static final Paint _selectionGlowPaint = Paint()
+    ..color = const Color(0xFFFF5C35).withValues(alpha: 0.25)
+    ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8 * _kLauncherScale);
+  static final Paint _selectionFillPaint = Paint()
+    ..color = const Color(0xFFFF5C35).withValues(alpha: 0.6);
+  static final Path _previewTabPath = _buildPreviewTabPath();
+
   final Offset anchor;
-  final double t;
   final List<AppEntry> apps;
   final int offset;
-  final String? sel;
+  final int? selectedSlot;
 
-  const _Painter({
+  late final int _visible;
+  late final double _segRad;
+  late final Path _bgPath;
+  late final Path? _selectionPath;
+  late final List<_LabelLayout> _labels;
+  late final _LabelLayout? _selectedLabel;
+  late final TextPainter? _previewPainter;
+
+  _Painter({
     required this.anchor,
-    required this.t,
     required this.apps,
     required this.offset,
-    required this.sel,
-  });
+    required this.selectedSlot,
+  }) {
+    _visible = math.min(_kVisibleAppCount, apps.length);
+    _segRad = _visible == 0 ? 0 : _kMenuSpanRad / _visible;
+    _bgPath = _buildCrescentPath(anchor);
+    _labels = _buildLabels();
+    _selectedLabel =
+        selectedSlot != null &&
+            selectedSlot! >= 0 &&
+            selectedSlot! < _labels.length
+        ? _labels[selectedSlot!]
+        : null;
+    _selectionPath = _selectedLabel == null
+        ? null
+        : _buildSelectionPath(_selectedLabel.slot);
+    _previewPainter = _selectedLabel == null
+        ? null
+        : _createPreviewPainter(_selectedLabel.app);
+  }
 
-  Offset _point(double radius, double angle) {
+  static Offset _pointFor(Offset anchor, double radius, double angle) {
     return Offset(
       anchor.dx + radius * math.cos(angle),
       anchor.dy + radius * math.sin(angle),
     );
   }
 
-  Offset _tangentPoint(double radius, double tangentOffset, double angle) {
-    return Offset(
-      anchor.dx +
-          radius * math.cos(angle) +
-          tangentOffset * math.cos(angle + math.pi / 2),
-      anchor.dy +
-          radius * math.sin(angle) +
-          tangentOffset * math.sin(angle + math.pi / 2),
-    );
-  }
-
-  double _towardTopLean(double angle) {
-    const top = math.pi * 1.5;
-    var delta = top - angle;
-    while (delta > math.pi) {
-      delta -= math.pi * 2;
-    }
-    while (delta < -math.pi) {
-      delta += math.pi * 2;
-    }
-    return delta.clamp(-0.28, 0.28) * 0.45;
-  }
-
-  void _drawDivider(Canvas canvas, double deg) {
-    final r = _rad(deg);
-    final start = Offset(
-      anchor.dx + (_kInnerR + 8 * _kLauncherScale) * math.cos(r),
-      anchor.dy + (_kInnerR + 8 * _kLauncherScale) * math.sin(r),
-    );
-    final end = Offset(
-      anchor.dx + (_kOuterR - 14 * _kLauncherScale) * math.cos(r),
-      anchor.dy + (_kOuterR - 14 * _kLauncherScale) * math.sin(r),
-    );
-
-    canvas.drawLine(
-      start,
-      end,
-      Paint()
-        ..color = const Color(0xFF555555)
-        ..strokeWidth = 4.5 * _kLauncherScale
-        ..strokeCap = StrokeCap.round,
-    );
-  }
-
-  void _drawPreview(Canvas canvas, AppEntry app, double midRad) {
-    final previewRad = midRad + _towardTopLean(midRad);
+  static Path _buildPreviewTabPath() {
     final tabStart = _kOuterR - 20 * _kLauncherScale;
     final tabLength = 122 * _kLauncherScale;
     final tabWidth = 52 * _kLauncherScale;
@@ -291,11 +341,7 @@ class _Painter extends CustomPainter {
     final neckWidth = tabWidth * 0.62;
     final tabEnd = tabStart + tabLength;
 
-    canvas.save();
-    canvas.translate(anchor.dx, anchor.dy);
-    canvas.rotate(previewRad);
-
-    final tabPath = Path()
+    return Path()
       ..moveTo(tabStart, -neckWidth / 2)
       ..quadraticBezierTo(
         tabStart + flare * 0.35,
@@ -325,68 +371,46 @@ class _Painter extends CustomPainter {
         neckWidth / 2,
       )
       ..close();
-
-    canvas.drawPath(
-      tabPath,
-      Paint()
-        ..color = Colors.black.withValues(alpha: 0.35)
-        ..maskFilter = const MaskFilter.blur(
-          BlurStyle.normal,
-          8 * _kLauncherScale,
-        ),
-    );
-    canvas.drawPath(tabPath, Paint()..color = const Color(0xFFD9D9D9));
-    canvas.restore();
-
-    final textCenter = _tangentPoint(
-      _kOuterR + 40 * _kLauncherScale,
-      2 * _kLauncherScale,
-      previewRad,
-    );
-    final tp = TextPainter(
-      text: TextSpan(
-        text: app.label,
-        style: TextStyle(
-          fontSize: 15.5 * _kLabelScale,
-          fontWeight: FontWeight.w700,
-          color: const Color(0xFF1A1A1A),
-          letterSpacing: 0,
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout(maxWidth: 84 * _kLabelScale);
-
-    canvas.save();
-    canvas.translate(textCenter.dx, textCenter.dy);
-    canvas.rotate(previewRad + math.pi);
-    tp.paint(canvas, Offset(-tp.width / 2, -tp.height / 2));
-    canvas.restore();
   }
 
-  Path _crescentPath(double startDeg, double endDeg) {
-    final s = _rad(startDeg);
-    final e = _rad(endDeg);
-    final sweep = e - s;
-    final cornerR = 14 * _kLauncherScale;
-    final outerDelta = cornerR / _kOuterR;
-    final innerDelta = cornerR / _kInnerR;
-    final path = Path();
+  static Path _buildCrescentPath(Offset anchor) {
+    const cornerR = 14 * _kLauncherScale;
+    const outerDelta = cornerR / _kOuterR;
+    const innerDelta = cornerR / _kInnerR;
 
+    final path = Path();
     final outerRect = Rect.fromCircle(center: anchor, radius: _kOuterR);
     final innerRect = Rect.fromCircle(center: anchor, radius: _kInnerR);
-    final startOuterArc = _point(_kOuterR, s + outerDelta);
-    final startOuter = _point(_kOuterR, s);
-    final startInner = _point(_kInnerR, s);
-    final endOuter = _point(_kOuterR, e);
-    final endInner = _point(_kInnerR, e);
-    final endOuterCorner = _point(_kOuterR - cornerR, e);
-    final endInnerCorner = _point(_kInnerR + cornerR, e);
-    final endInnerArc = _point(_kInnerR, e - innerDelta);
-    final startInnerCorner = _point(_kInnerR + cornerR, s);
-    final startOuterCorner = _point(_kOuterR - cornerR, s);
+    final startOuterArc = _pointFor(
+      anchor,
+      _kOuterR,
+      _kArcStartRad + outerDelta,
+    );
+    final startOuter = _pointFor(anchor, _kOuterR, _kArcStartRad);
+    final startInner = _pointFor(anchor, _kInnerR, _kArcStartRad);
+    final endOuter = _pointFor(anchor, _kOuterR, _kArcEndRad);
+    final endInner = _pointFor(anchor, _kInnerR, _kArcEndRad);
+    final endOuterCorner = _pointFor(anchor, _kOuterR - cornerR, _kArcEndRad);
+    final endInnerCorner = _pointFor(anchor, _kInnerR + cornerR, _kArcEndRad);
+    final endInnerArc = _pointFor(anchor, _kInnerR, _kArcEndRad - innerDelta);
+    final startInnerCorner = _pointFor(
+      anchor,
+      _kInnerR + cornerR,
+      _kArcStartRad,
+    );
+    final startOuterCorner = _pointFor(
+      anchor,
+      _kOuterR - cornerR,
+      _kArcStartRad,
+    );
 
     path.moveTo(startOuterArc.dx, startOuterArc.dy);
-    path.arcTo(outerRect, s + outerDelta, sweep - 2 * outerDelta, false);
+    path.arcTo(
+      outerRect,
+      _kArcStartRad + outerDelta,
+      _kArcSpanRad - 2 * outerDelta,
+      false,
+    );
     path.quadraticBezierTo(
       endOuter.dx,
       endOuter.dy,
@@ -400,7 +424,12 @@ class _Painter extends CustomPainter {
       endInnerArc.dx,
       endInnerArc.dy,
     );
-    path.arcTo(innerRect, e - innerDelta, -(sweep - 2 * innerDelta), false);
+    path.arcTo(
+      innerRect,
+      _kArcEndRad - innerDelta,
+      -(_kArcSpanRad - 2 * innerDelta),
+      false,
+    );
     path.quadraticBezierTo(
       startInner.dx,
       startInner.dy,
@@ -418,132 +447,175 @@ class _Painter extends CustomPainter {
     return path;
   }
 
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (t == 0) return;
+  Offset _point(double radius, double angle) {
+    return _pointFor(anchor, radius, angle);
+  }
 
-    canvas.saveLayer(
-      Rect.largest,
-      Paint()..color = Color.fromRGBO(255, 255, 255, t),
+  Offset _tangentPoint(double radius, double tangentOffset, double angle) {
+    return Offset(
+      anchor.dx +
+          radius * math.cos(angle) +
+          tangentOffset * math.cos(angle + math.pi / 2),
+      anchor.dy +
+          radius * math.sin(angle) +
+          tangentOffset * math.sin(angle + math.pi / 2),
     );
+  }
 
-    final total = apps.length;
-    final visible = math.min(_kVisibleAppCount, total);
-    if (visible == 0) {
-      canvas.restore();
-      return;
+  double _towardTopLean(double angle) {
+    const top = math.pi * 1.5;
+    var delta = top - angle;
+    while (delta > math.pi) {
+      delta -= math.pi * 2;
     }
-
-    final spanDeg = _kMenuEnd - _kMenuStart;
-    final segDeg = spanDeg / visible;
-    int? selectedSlot;
-    AppEntry? selectedApp;
-
-    if (sel != null) {
-      for (int i = 0; i < visible; i++) {
-        final idx = ((i + offset) % total + total) % total;
-        if (apps[idx].id == sel) {
-          selectedSlot = i;
-          selectedApp = apps[idx];
-          break;
-        }
-      }
+    while (delta < -math.pi) {
+      delta += math.pi * 2;
     }
+    return delta.clamp(-0.28, 0.28) * 0.45;
+  }
 
-    final bgPath = _crescentPath(_kArcStart, _kArcEnd);
+  List<_LabelLayout> _buildLabels() {
+    if (_visible == 0) return const [];
 
-    canvas.drawPath(
-      bgPath,
-      Paint()
-        ..color = Colors.black.withValues(alpha: 0.4)
-        ..maskFilter = const MaskFilter.blur(
-          BlurStyle.normal,
-          10 * _kLauncherScale,
-        ),
-    );
-    canvas.drawPath(bgPath, Paint()..color = const Color(0xFFD9D9D9));
-
-    canvas.save();
-    canvas.clipPath(bgPath);
-
-    if (selectedSlot != null) {
-      final segS = _rad(_kMenuStart + selectedSlot * segDeg);
-      final segE = _rad(_kMenuStart + (selectedSlot + 1) * segDeg);
-      final segSweep = segE - segS;
-
-      final wedge = Path();
-      wedge.moveTo(anchor.dx, anchor.dy);
-      wedge.addArc(
-        Rect.fromCircle(
-          center: anchor,
-          radius: _kOuterR + 10 * _kLauncherScale,
-        ),
-        segS,
-        segSweep,
-      );
-      wedge.lineTo(anchor.dx, anchor.dy);
-
-      canvas.drawPath(
-        wedge,
-        Paint()
-          ..color = const Color(0xFFFF5C35).withValues(alpha: 0.25)
-          ..maskFilter = const MaskFilter.blur(
-            BlurStyle.normal,
-            8 * _kLauncherScale,
-          ),
-      );
-      canvas.drawPath(
-        wedge,
-        Paint()..color = const Color(0xFFFF5C35).withValues(alpha: 0.6),
-      );
-    }
-
-    canvas.restore();
-
-    _drawDivider(canvas, _kMenuStart);
-    _drawDivider(canvas, _kMenuEnd);
-
-    for (int i = 0; i < visible; i++) {
-      final idx = ((i + offset) % total + total) % total;
+    final labels = <_LabelLayout>[];
+    final midR = (_kInnerR + _kOuterR) / 2;
+    for (int i = 0; i < _visible; i++) {
+      final idx = ((i + offset) % apps.length + apps.length) % apps.length;
       final app = apps[idx];
-      final isSel = sel == app.id;
-
-      final midDeg = _kMenuStart + (i + 0.5) * segDeg;
-      final midRad = _rad(midDeg);
-      final midR = (_kInnerR + _kOuterR) / 2;
-
-      final tx = anchor.dx + midR * math.cos(midRad);
-      final ty = anchor.dy + midR * math.sin(midRad);
-
-      final tp = TextPainter(
+      final isSelected = selectedSlot == i;
+      final midRad = _kMenuStartRad + (i + 0.5) * _segRad;
+      final painter = TextPainter(
         text: TextSpan(
           text: app.label,
           style: TextStyle(
-            fontSize: (isSel ? 10.5 : 9.5) * _kLabelScale,
+            fontSize: (isSelected ? 10.5 : 9.5) * _kLabelScale,
             fontWeight: FontWeight.w700,
-            color: isSel ? Colors.white : const Color(0xFF1A1A1A),
+            color: isSelected ? Colors.white : const Color(0xFF1A1A1A),
             letterSpacing: 0,
           ),
         ),
         textDirection: TextDirection.ltr,
       )..layout(maxWidth: 72 * _kLabelScale);
 
-      canvas.save();
-      canvas.translate(tx, ty);
-      canvas.rotate(midRad + math.pi);
-      tp.paint(canvas, Offset(-tp.width / 2, -tp.height / 2));
-      canvas.restore();
+      labels.add(
+        _LabelLayout(
+          app: app,
+          slot: i,
+          midRad: midRad,
+          center: _point(midR, midRad),
+          painter: painter,
+        ),
+      );
     }
+    return labels;
+  }
 
-    if (selectedSlot != null && selectedApp != null) {
-      final midDeg = _kMenuStart + (selectedSlot + 0.5) * segDeg;
-      _drawPreview(canvas, selectedApp, _rad(midDeg));
-    }
+  TextPainter _createPreviewPainter(AppEntry app) {
+    return TextPainter(
+      text: TextSpan(
+        text: app.label,
+        style: TextStyle(
+          fontSize: 15.5 * _kLabelScale,
+          fontWeight: FontWeight.w700,
+          color: const Color(0xFF1A1A1A),
+          letterSpacing: 0,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: 84 * _kLabelScale);
+  }
 
+  Path _buildSelectionPath(int slot) {
+    final segS = _kMenuStartRad + slot * _segRad;
+    final wedge = Path()
+      ..moveTo(anchor.dx, anchor.dy)
+      ..addArc(
+        Rect.fromCircle(
+          center: anchor,
+          radius: _kOuterR + 10 * _kLauncherScale,
+        ),
+        segS,
+        _segRad,
+      )
+      ..lineTo(anchor.dx, anchor.dy);
+    return wedge;
+  }
+
+  void _drawDivider(Canvas canvas, double rad) {
+    final start = _point(_kInnerR + 8 * _kLauncherScale, rad);
+    final end = _point(_kOuterR - 14 * _kLauncherScale, rad);
+    canvas.drawLine(start, end, _dividerPaint);
+  }
+
+  void _drawPreview(
+    Canvas canvas,
+    _LabelLayout selectedLabel,
+    TextPainter previewPainter,
+  ) {
+    final previewRad =
+        selectedLabel.midRad + _towardTopLean(selectedLabel.midRad);
+
+    canvas.save();
+    canvas.translate(anchor.dx, anchor.dy);
+    canvas.rotate(previewRad);
+    canvas.drawPath(_previewTabPath, _previewShadowPaint);
+    canvas.drawPath(_previewTabPath, _previewFillPaint);
+    canvas.restore();
+
+    final textCenter = _tangentPoint(
+      _kOuterR + 40 * _kLauncherScale,
+      2 * _kLauncherScale,
+      previewRad,
+    );
+
+    canvas.save();
+    canvas.translate(textCenter.dx, textCenter.dy);
+    canvas.rotate(previewRad + math.pi);
+    previewPainter.paint(
+      canvas,
+      Offset(-previewPainter.width / 2, -previewPainter.height / 2),
+    );
     canvas.restore();
   }
 
   @override
+  void paint(Canvas canvas, Size size) {
+    if (_visible == 0) return;
+
+    canvas.drawPath(_bgPath, _bgShadowPaint);
+    canvas.drawPath(_bgPath, _bgFillPaint);
+
+    canvas.save();
+    canvas.clipPath(_bgPath);
+    if (_selectionPath != null) {
+      canvas.drawPath(_selectionPath, _selectionGlowPaint);
+      canvas.drawPath(_selectionPath, _selectionFillPaint);
+    }
+    canvas.restore();
+
+    _drawDivider(canvas, _kMenuStartRad);
+    _drawDivider(canvas, _kMenuEndRad);
+
+    for (final label in _labels) {
+      canvas.save();
+      canvas.translate(label.center.dx, label.center.dy);
+      canvas.rotate(label.midRad + math.pi);
+      label.painter.paint(
+        canvas,
+        Offset(-label.painter.width / 2, -label.painter.height / 2),
+      );
+      canvas.restore();
+    }
+
+    if (_selectedLabel != null && _previewPainter != null) {
+      _drawPreview(canvas, _selectedLabel, _previewPainter);
+    }
+  }
+
+  @override
   bool shouldRepaint(covariant _Painter old) =>
-      old.t != t || old.sel != sel || old.offset != offset;
+      old.anchor != anchor ||
+      old.apps != apps ||
+      old.offset != offset ||
+      old.selectedSlot != selectedSlot;
 }
