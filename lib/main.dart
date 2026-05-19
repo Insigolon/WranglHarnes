@@ -40,11 +40,15 @@ const _kApps = [
 
 const double _kArcStart = 205.0;
 const double _kArcEnd = 335.0;
-const double _kHubR = 46.0;
-const double _kInnerR = 72.0;
-const double _kOuterR = 148.0;
-const double _kCapR = 13.0;
-const double _kCornerInset = 12.0;
+const double _kLauncherScale = 1.15;
+const double _kLabelScale = 1.35;
+const double _kHubR = 46.0 * _kLauncherScale;
+const double _kInnerR = 72.0 * _kLauncherScale;
+const double _kOuterR = 148.0 * _kLauncherScale;
+const double _kCornerInset = 12.0 * _kLauncherScale;
+const double _kButtonSweep = 18.0;
+const double _kMenuStart = _kArcStart + _kButtonSweep;
+const double _kMenuEnd = _kArcEnd - _kButtonSweep;
 
 double _rad(double d) => d * math.pi / 180;
 
@@ -111,8 +115,18 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
       setState(() => _sel = null);
       return;
     }
+
+    if (ang < _kMenuStart) {
+      _nudge(-1);
+      return;
+    }
+    if (ang > _kMenuEnd) {
+      _nudge(1);
+      return;
+    }
+
     final n = _kApps.length;
-    final i = (((ang - _kArcStart) / (_kArcEnd - _kArcStart)) * n)
+    final i = (((ang - _kMenuStart) / (_kMenuEnd - _kMenuStart)) * n)
         .floor()
         .clamp(0, n - 1);
     final idx = ((i + _offset) % n + n) % n;
@@ -154,10 +168,6 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
                       ),
                     ),
                   ),
-                if (_anim.value > 0.5) ...[
-                  _arrow(anchor, left: true),
-                  _arrow(anchor, left: false),
-                ],
                 Positioned(
                   left: anchor.dx - _kHubR,
                   top: anchor.dy - _kHubR,
@@ -171,32 +181,6 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
           ),
         );
       },
-    );
-  }
-
-  Widget _arrow(Offset anchor, {required bool left}) {
-    final deg = left ? _kArcStart - 16.0 : _kArcEnd + 16.0;
-    final r = _rad(deg);
-    final mid = (_kInnerR + _kOuterR) / 2;
-    return Positioned(
-      left: anchor.dx + mid * math.cos(r) - 14,
-      top: anchor.dy + mid * math.sin(r) - 14,
-      child: GestureDetector(
-        onTap: () => _nudge(left ? -1 : 1),
-        child: Container(
-          width: 28,
-          height: 28,
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.13),
-            shape: BoxShape.circle,
-          ),
-          child: Icon(
-            left ? Icons.chevron_left : Icons.chevron_right,
-            color: Colors.white.withValues(alpha: 0.85),
-            size: 18,
-          ),
-        ),
-      ),
     );
   }
 }
@@ -214,8 +198,8 @@ class _Hub extends StatelessWidget {
       boxShadow: [
         BoxShadow(
           color: Colors.black.withValues(alpha: 0.5),
-          blurRadius: 20,
-          spreadRadius: 4,
+          blurRadius: 20 * _kLauncherScale,
+          spreadRadius: 4 * _kLauncherScale,
         ),
       ],
     ),
@@ -237,44 +221,85 @@ class _Painter extends CustomPainter {
     required this.sel,
   });
 
+  Offset _point(double radius, double angle) {
+    return Offset(
+      anchor.dx + radius * math.cos(angle),
+      anchor.dy + radius * math.sin(angle),
+    );
+  }
+
+  void _drawDivider(Canvas canvas, double deg) {
+    final r = _rad(deg);
+    final start = Offset(
+      anchor.dx + (_kInnerR + 8 * _kLauncherScale) * math.cos(r),
+      anchor.dy + (_kInnerR + 8 * _kLauncherScale) * math.sin(r),
+    );
+    final end = Offset(
+      anchor.dx + (_kOuterR - 14 * _kLauncherScale) * math.cos(r),
+      anchor.dy + (_kOuterR - 14 * _kLauncherScale) * math.sin(r),
+    );
+
+    canvas.drawLine(
+      start,
+      end,
+      Paint()
+        ..color = const Color(0xFF555555)
+        ..strokeWidth = 4.5 * _kLauncherScale
+        ..strokeCap = StrokeCap.round,
+    );
+  }
+
   Path _crescentPath(double startDeg, double endDeg) {
     final s = _rad(startDeg);
     final e = _rad(endDeg);
     final sweep = e - s;
+    final cornerR = 14 * _kLauncherScale;
+    final outerDelta = cornerR / _kOuterR;
+    final innerDelta = cornerR / _kInnerR;
     final path = Path();
 
     final outerRect = Rect.fromCircle(center: anchor, radius: _kOuterR);
     final innerRect = Rect.fromCircle(center: anchor, radius: _kInnerR);
+    final startOuterArc = _point(_kOuterR, s + outerDelta);
+    final startOuter = _point(_kOuterR, s);
+    final startInner = _point(_kInnerR, s);
+    final endOuter = _point(_kOuterR, e);
+    final endInner = _point(_kInnerR, e);
+    final endOuterCorner = _point(_kOuterR - cornerR, e);
+    final endInnerCorner = _point(_kInnerR + cornerR, e);
+    final endInnerArc = _point(_kInnerR, e - innerDelta);
+    final startInnerCorner = _point(_kInnerR + cornerR, s);
+    final startOuterCorner = _point(_kOuterR - cornerR, s);
 
-    path.addArc(outerRect, s, sweep);
-
-    final oeX = anchor.dx + _kOuterR * math.cos(e);
-    final oeY = anchor.dy + _kOuterR * math.sin(e);
-    final ieX = anchor.dx + _kInnerR * math.cos(e);
-    final ieY = anchor.dy + _kInnerR * math.sin(e);
-
-    final tanDX = math.sin(e);
-    final tanDY = -math.cos(e);
-    final cr = math.min(_kCapR, (_kOuterR - _kInnerR) / 2);
-
-    path.lineTo(oeX + tanDX * cr, oeY + tanDY * cr);
-    path.quadraticBezierTo(oeX, oeY, ieX + tanDX * cr, ieY + tanDY * cr);
-    path.lineTo(ieX, ieY);
-
-    path.addArc(innerRect, e, -sweep);
-
-    final osX = anchor.dx + _kOuterR * math.cos(s);
-    final osY = anchor.dy + _kOuterR * math.sin(s);
-    final isX = anchor.dx + _kInnerR * math.cos(s);
-    final isY = anchor.dy + _kInnerR * math.sin(s);
-
-    final tanSDX = -math.sin(s);
-    final tanSDY = math.cos(s);
-
-    path.lineTo(isX - tanSDX * cr, isY - tanSDY * cr);
-    path.quadraticBezierTo(isX, isY, osX - tanSDX * cr, osY - tanSDY * cr);
-    path.lineTo(osX, osY);
-
+    path.moveTo(startOuterArc.dx, startOuterArc.dy);
+    path.arcTo(outerRect, s + outerDelta, sweep - 2 * outerDelta, false);
+    path.quadraticBezierTo(
+      endOuter.dx,
+      endOuter.dy,
+      endOuterCorner.dx,
+      endOuterCorner.dy,
+    );
+    path.lineTo(endInnerCorner.dx, endInnerCorner.dy);
+    path.quadraticBezierTo(
+      endInner.dx,
+      endInner.dy,
+      endInnerArc.dx,
+      endInnerArc.dy,
+    );
+    path.arcTo(innerRect, e - innerDelta, -(sweep - 2 * innerDelta), false);
+    path.quadraticBezierTo(
+      startInner.dx,
+      startInner.dy,
+      startInnerCorner.dx,
+      startInnerCorner.dy,
+    );
+    path.lineTo(startOuterCorner.dx, startOuterCorner.dy);
+    path.quadraticBezierTo(
+      startOuter.dx,
+      startOuter.dy,
+      startOuterArc.dx,
+      startOuterArc.dy,
+    );
     path.close();
     return path;
   }
@@ -289,7 +314,7 @@ class _Painter extends CustomPainter {
     );
 
     final n = apps.length;
-    final spanDeg = _kArcEnd - _kArcStart;
+    final spanDeg = _kMenuEnd - _kMenuStart;
     final segDeg = spanDeg / n;
 
     final bgPath = _crescentPath(_kArcStart, _kArcEnd);
@@ -298,7 +323,10 @@ class _Painter extends CustomPainter {
       bgPath,
       Paint()
         ..color = Colors.black.withValues(alpha: 0.4)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+        ..maskFilter = const MaskFilter.blur(
+          BlurStyle.normal,
+          10 * _kLauncherScale,
+        ),
     );
     canvas.drawPath(bgPath, Paint()..color = const Color(0xFFD9D9D9));
 
@@ -309,14 +337,17 @@ class _Painter extends CustomPainter {
       for (int i = 0; i < n; i++) {
         final idx = ((i + offset) % n + n) % n;
         if (apps[idx].id != sel) continue;
-        final segS = _rad(_kArcStart + i * segDeg);
-        final segE = _rad(_kArcStart + (i + 1) * segDeg);
+        final segS = _rad(_kMenuStart + i * segDeg);
+        final segE = _rad(_kMenuStart + (i + 1) * segDeg);
         final segSweep = segE - segS;
 
         final wedge = Path();
         wedge.moveTo(anchor.dx, anchor.dy);
         wedge.addArc(
-          Rect.fromCircle(center: anchor, radius: _kOuterR + 10),
+          Rect.fromCircle(
+            center: anchor,
+            radius: _kOuterR + 10 * _kLauncherScale,
+          ),
           segS,
           segSweep,
         );
@@ -326,7 +357,10 @@ class _Painter extends CustomPainter {
           wedge,
           Paint()
             ..color = const Color(0xFFFF5C35).withValues(alpha: 0.25)
-            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+            ..maskFilter = const MaskFilter.blur(
+              BlurStyle.normal,
+              8 * _kLauncherScale,
+            ),
         );
         canvas.drawPath(
           wedge,
@@ -338,12 +372,15 @@ class _Painter extends CustomPainter {
 
     canvas.restore();
 
+    _drawDivider(canvas, _kMenuStart);
+    _drawDivider(canvas, _kMenuEnd);
+
     for (int i = 0; i < n; i++) {
       final idx = ((i + offset) % n + n) % n;
       final app = apps[idx];
       final isSel = sel == app.id;
 
-      final midDeg = _kArcStart + (i + 0.5) * segDeg;
+      final midDeg = _kMenuStart + (i + 0.5) * segDeg;
       final midRad = _rad(midDeg);
       final midR = (_kInnerR + _kOuterR) / 2;
 
@@ -354,14 +391,14 @@ class _Painter extends CustomPainter {
         text: TextSpan(
           text: app.label,
           style: TextStyle(
-            fontSize: isSel ? 10.5 : 9.5,
+            fontSize: (isSel ? 10.5 : 9.5) * _kLabelScale,
             fontWeight: FontWeight.w700,
             color: isSel ? Colors.white : const Color(0xFF1A1A1A),
             letterSpacing: 0,
           ),
         ),
         textDirection: TextDirection.ltr,
-      )..layout(maxWidth: 72);
+      )..layout(maxWidth: 72 * _kLabelScale);
 
       canvas.save();
       canvas.translate(tx, ty);
