@@ -40,8 +40,8 @@ const _kApps = [
 
 const double _kArcStart = 205.0;
 const double _kArcEnd = 335.0;
-const double _kLauncherScale = 1.15;
-const double _kLabelScale = 1.35;
+const double _kLauncherScale = 1.28;
+const double _kLabelScale = 1.55;
 const double _kHubR = 46.0 * _kLauncherScale;
 const double _kInnerR = 72.0 * _kLauncherScale;
 const double _kOuterR = 148.0 * _kLauncherScale;
@@ -49,6 +49,7 @@ const double _kCornerInset = 12.0 * _kLauncherScale;
 const double _kButtonSweep = 18.0;
 const double _kMenuStart = _kArcStart + _kButtonSweep;
 const double _kMenuEnd = _kArcEnd - _kButtonSweep;
+const int _kVisibleAppCount = 9;
 
 double _rad(double d) => d * math.pi / 180;
 
@@ -125,11 +126,12 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
       return;
     }
 
-    final n = _kApps.length;
-    final i = (((ang - _kMenuStart) / (_kMenuEnd - _kMenuStart)) * n)
+    final total = _kApps.length;
+    final visible = math.min(_kVisibleAppCount, total);
+    final i = (((ang - _kMenuStart) / (_kMenuEnd - _kMenuStart)) * visible)
         .floor()
-        .clamp(0, n - 1);
-    final idx = ((i + _offset) % n + n) % n;
+        .clamp(0, visible - 1);
+    final idx = ((i + _offset) % total + total) % total;
     setState(() => _sel = _kApps[idx].id);
   }
 
@@ -313,9 +315,15 @@ class _Painter extends CustomPainter {
       Paint()..color = Color.fromRGBO(255, 255, 255, t),
     );
 
-    final n = apps.length;
+    final total = apps.length;
+    final visible = math.min(_kVisibleAppCount, total);
+    if (visible == 0) {
+      canvas.restore();
+      return;
+    }
+
     final spanDeg = _kMenuEnd - _kMenuStart;
-    final segDeg = spanDeg / n;
+    final segDeg = spanDeg / visible;
 
     final bgPath = _crescentPath(_kArcStart, _kArcEnd);
 
@@ -334,8 +342,8 @@ class _Painter extends CustomPainter {
     canvas.clipPath(bgPath);
 
     if (sel != null) {
-      for (int i = 0; i < n; i++) {
-        final idx = ((i + offset) % n + n) % n;
+      for (int i = 0; i < visible; i++) {
+        final idx = ((i + offset) % total + total) % total;
         if (apps[idx].id != sel) continue;
         final segS = _rad(_kMenuStart + i * segDeg);
         final segE = _rad(_kMenuStart + (i + 1) * segDeg);
@@ -375,8 +383,8 @@ class _Painter extends CustomPainter {
     _drawDivider(canvas, _kMenuStart);
     _drawDivider(canvas, _kMenuEnd);
 
-    for (int i = 0; i < n; i++) {
-      final idx = ((i + offset) % n + n) % n;
+    for (int i = 0; i < visible; i++) {
+      final idx = ((i + offset) % total + total) % total;
       final app = apps[idx];
       final isSel = sel == app.id;
 
