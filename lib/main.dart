@@ -64,8 +64,7 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
   bool _open = false;
   String? _sel;
   int _offset = 0;
-  double _dragAccum = 0;
-  int _lastMs = 0;
+  int _lastNudgeMs = 0;
 
   late final AnimationController _ctrl = AnimationController(
     vsync: this,
@@ -81,32 +80,34 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
     _open ? _ctrl.forward() : _ctrl.reverse();
   }
 
-  void _pan(DragUpdateDetails d) {
+  void _panStart(DragStartDetails d, Offset anchor) {
     if (!_open) return;
-    final now = DateTime.now().millisecondsSinceEpoch;
-    if (now - _lastMs < 16) return;
-    _lastMs = now;
-    _dragAccum += d.delta.dx;
-    final s = (_dragAccum / 30).truncate();
-    if (s != 0) {
-      setState(() {
-        _offset += s;
-        _dragAccum -= s * 30;
-      });
-    }
+    _updateHover(d.localPosition, anchor, allowPaging: false);
   }
 
-  void _panEnd(DragEndDetails d) {
-    final s = (d.velocity.pixelsPerSecond.dx / 480).round();
-    if (s != 0) setState(() => _offset += s);
+  void _pan(DragUpdateDetails d, Offset anchor) {
+    if (!_open) return;
+    _updateHover(d.localPosition, anchor);
   }
+
+  void _panEnd(DragEndDetails d) {}
 
   void _nudge(int d) => setState(() => _offset += d);
 
-  void _tap(TapDownDetails d, Offset anchor) {
-    if (!_open) return;
-    final dx = d.localPosition.dx - anchor.dx;
-    final dy = d.localPosition.dy - anchor.dy;
+  void _pageByDrag(int d) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastNudgeMs < 220) return;
+    _lastNudgeMs = now;
+    _nudge(d);
+  }
+
+  void _updateHover(
+    Offset localPosition,
+    Offset anchor, {
+    bool allowPaging = true,
+  }) {
+    final dx = localPosition.dx - anchor.dx;
+    final dy = localPosition.dy - anchor.dy;
     final dist = math.sqrt(dx * dx + dy * dy);
     final ang = (math.atan2(dy, dx) * 180 / math.pi + 360) % 360;
     if (dist < _kInnerR ||
@@ -118,11 +119,11 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
     }
 
     if (ang < _kMenuStart) {
-      _nudge(-1);
+      allowPaging ? _pageByDrag(-1) : _nudge(-1);
       return;
     }
     if (ang > _kMenuEnd) {
-      _nudge(1);
+      allowPaging ? _pageByDrag(1) : _nudge(1);
       return;
     }
 
@@ -133,6 +134,11 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
         .clamp(0, visible - 1);
     final idx = ((i + _offset) % total + total) % total;
     setState(() => _sel = _kApps[idx].id);
+  }
+
+  void _tap(TapDownDetails d, Offset anchor) {
+    if (!_open) return;
+    _updateHover(d.localPosition, anchor, allowPaging: false);
   }
 
   @override
@@ -151,7 +157,8 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
           animation: _anim,
           builder: (_, _) => GestureDetector(
             onDoubleTap: _toggle,
-            onPanUpdate: _pan,
+            onPanStart: (d) => _panStart(d, anchor),
+            onPanUpdate: (d) => _pan(d, anchor),
             onPanEnd: _panEnd,
             onTapDown: (d) => _tap(d, anchor),
             child: Stack(
@@ -230,6 +237,29 @@ class _Painter extends CustomPainter {
     );
   }
 
+  Offset _tangentPoint(double radius, double tangentOffset, double angle) {
+    return Offset(
+      anchor.dx +
+          radius * math.cos(angle) +
+          tangentOffset * math.cos(angle + math.pi / 2),
+      anchor.dy +
+          radius * math.sin(angle) +
+          tangentOffset * math.sin(angle + math.pi / 2),
+    );
+  }
+
+  double _towardTopLean(double angle) {
+    const top = math.pi * 1.5;
+    var delta = top - angle;
+    while (delta > math.pi) {
+      delta -= math.pi * 2;
+    }
+    while (delta < -math.pi) {
+      delta += math.pi * 2;
+    }
+    return delta.clamp(-0.28, 0.28) * 0.45;
+  }
+
   void _drawDivider(Canvas canvas, double deg) {
     final r = _rad(deg);
     final start = Offset(
@@ -249,6 +279,88 @@ class _Painter extends CustomPainter {
         ..strokeWidth = 4.5 * _kLauncherScale
         ..strokeCap = StrokeCap.round,
     );
+  }
+
+  void _drawPreview(Canvas canvas, AppEntry app, double midRad) {
+    final previewRad = midRad + _towardTopLean(midRad);
+    final tabStart = _kOuterR - 20 * _kLauncherScale;
+    final tabLength = 122 * _kLauncherScale;
+    final tabWidth = 52 * _kLauncherScale;
+    final tabRadius = 13 * _kLauncherScale;
+    final flare = 22 * _kLauncherScale;
+    final neckWidth = tabWidth * 0.62;
+    final tabEnd = tabStart + tabLength;
+
+    canvas.save();
+    canvas.translate(anchor.dx, anchor.dy);
+    canvas.rotate(previewRad);
+
+    final tabPath = Path()
+      ..moveTo(tabStart, -neckWidth / 2)
+      ..quadraticBezierTo(
+        tabStart + flare * 0.35,
+        -tabWidth / 2,
+        tabStart + flare,
+        -tabWidth / 2,
+      )
+      ..lineTo(tabEnd - tabRadius, -tabWidth / 2)
+      ..quadraticBezierTo(
+        tabEnd,
+        -tabWidth / 2,
+        tabEnd,
+        -tabWidth / 2 + tabRadius,
+      )
+      ..lineTo(tabEnd, tabWidth / 2 - tabRadius)
+      ..quadraticBezierTo(
+        tabEnd,
+        tabWidth / 2,
+        tabEnd - tabRadius,
+        tabWidth / 2,
+      )
+      ..lineTo(tabStart + flare * 0.75, tabWidth / 2)
+      ..quadraticBezierTo(
+        tabStart + flare * 0.15,
+        tabWidth / 2,
+        tabStart,
+        neckWidth / 2,
+      )
+      ..close();
+
+    canvas.drawPath(
+      tabPath,
+      Paint()
+        ..color = Colors.black.withValues(alpha: 0.35)
+        ..maskFilter = const MaskFilter.blur(
+          BlurStyle.normal,
+          8 * _kLauncherScale,
+        ),
+    );
+    canvas.drawPath(tabPath, Paint()..color = const Color(0xFFD9D9D9));
+    canvas.restore();
+
+    final textCenter = _tangentPoint(
+      _kOuterR + 40 * _kLauncherScale,
+      2 * _kLauncherScale,
+      previewRad,
+    );
+    final tp = TextPainter(
+      text: TextSpan(
+        text: app.label,
+        style: TextStyle(
+          fontSize: 15.5 * _kLabelScale,
+          fontWeight: FontWeight.w700,
+          color: const Color(0xFF1A1A1A),
+          letterSpacing: 0,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: 84 * _kLabelScale);
+
+    canvas.save();
+    canvas.translate(textCenter.dx, textCenter.dy);
+    canvas.rotate(previewRad + math.pi);
+    tp.paint(canvas, Offset(-tp.width / 2, -tp.height / 2));
+    canvas.restore();
   }
 
   Path _crescentPath(double startDeg, double endDeg) {
@@ -324,6 +436,19 @@ class _Painter extends CustomPainter {
 
     final spanDeg = _kMenuEnd - _kMenuStart;
     final segDeg = spanDeg / visible;
+    int? selectedSlot;
+    AppEntry? selectedApp;
+
+    if (sel != null) {
+      for (int i = 0; i < visible; i++) {
+        final idx = ((i + offset) % total + total) % total;
+        if (apps[idx].id == sel) {
+          selectedSlot = i;
+          selectedApp = apps[idx];
+          break;
+        }
+      }
+    }
 
     final bgPath = _crescentPath(_kArcStart, _kArcEnd);
 
@@ -341,41 +466,36 @@ class _Painter extends CustomPainter {
     canvas.save();
     canvas.clipPath(bgPath);
 
-    if (sel != null) {
-      for (int i = 0; i < visible; i++) {
-        final idx = ((i + offset) % total + total) % total;
-        if (apps[idx].id != sel) continue;
-        final segS = _rad(_kMenuStart + i * segDeg);
-        final segE = _rad(_kMenuStart + (i + 1) * segDeg);
-        final segSweep = segE - segS;
+    if (selectedSlot != null) {
+      final segS = _rad(_kMenuStart + selectedSlot * segDeg);
+      final segE = _rad(_kMenuStart + (selectedSlot + 1) * segDeg);
+      final segSweep = segE - segS;
 
-        final wedge = Path();
-        wedge.moveTo(anchor.dx, anchor.dy);
-        wedge.addArc(
-          Rect.fromCircle(
-            center: anchor,
-            radius: _kOuterR + 10 * _kLauncherScale,
+      final wedge = Path();
+      wedge.moveTo(anchor.dx, anchor.dy);
+      wedge.addArc(
+        Rect.fromCircle(
+          center: anchor,
+          radius: _kOuterR + 10 * _kLauncherScale,
+        ),
+        segS,
+        segSweep,
+      );
+      wedge.lineTo(anchor.dx, anchor.dy);
+
+      canvas.drawPath(
+        wedge,
+        Paint()
+          ..color = const Color(0xFFFF5C35).withValues(alpha: 0.25)
+          ..maskFilter = const MaskFilter.blur(
+            BlurStyle.normal,
+            8 * _kLauncherScale,
           ),
-          segS,
-          segSweep,
-        );
-        wedge.lineTo(anchor.dx, anchor.dy);
-
-        canvas.drawPath(
-          wedge,
-          Paint()
-            ..color = const Color(0xFFFF5C35).withValues(alpha: 0.25)
-            ..maskFilter = const MaskFilter.blur(
-              BlurStyle.normal,
-              8 * _kLauncherScale,
-            ),
-        );
-        canvas.drawPath(
-          wedge,
-          Paint()..color = const Color(0xFFFF5C35).withValues(alpha: 0.6),
-        );
-        break;
-      }
+      );
+      canvas.drawPath(
+        wedge,
+        Paint()..color = const Color(0xFFFF5C35).withValues(alpha: 0.6),
+      );
     }
 
     canvas.restore();
@@ -413,6 +533,11 @@ class _Painter extends CustomPainter {
       canvas.rotate(midRad + math.pi);
       tp.paint(canvas, Offset(-tp.width / 2, -tp.height / 2));
       canvas.restore();
+    }
+
+    if (selectedSlot != null && selectedApp != null) {
+      final midDeg = _kMenuStart + (selectedSlot + 0.5) * segDeg;
+      _drawPreview(canvas, selectedApp, _rad(midDeg));
     }
 
     canvas.restore();
