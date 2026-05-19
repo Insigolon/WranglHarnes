@@ -5,19 +5,18 @@ void main() => runApp(const _App());
 
 class _App extends StatelessWidget {
   const _App();
+
   @override
   Widget build(BuildContext context) {
     return const MaterialApp(
       debugShowCheckedModeBanner: false,
       home: Scaffold(
         backgroundColor: Color(0xFF0D0D0D),
-        body: SafeArea(child: Center(child: RadialLauncher())),
+        body: SafeArea(child: RadialLauncher()),
       ),
     );
   }
 }
-
-// ─── Data ────────────────────────────────────────────────
 
 class AppEntry {
   final String id, label;
@@ -39,28 +38,19 @@ const _kApps = [
   AppEntry('l', 'YouTube'),
 ];
 
-// ─── Constants ───────────────────────────────────────────
-
-// The arc sweeps from _kArcStart to _kArcEnd (degrees, standard math angles)
 const double _kArcStart = 205.0;
 const double _kArcEnd = 335.0;
-
 const double _kHubR = 46.0;
-
-// Crescent band radii
-const double _kInnerR = 72.0; // inner edge of band
-const double _kOuterR = 148.0; // outer edge of band
-
-// Corner radius on the two arc-tip caps (r=13 from Figma)
+const double _kInnerR = 72.0;
+const double _kOuterR = 148.0;
 const double _kCapR = 13.0;
+const double _kCornerInset = 12.0;
 
-double _deg(double r) => r * 180 / math.pi;
 double _rad(double d) => d * math.pi / 180;
-
-// ─── Widget ──────────────────────────────────────────────
 
 class RadialLauncher extends StatefulWidget {
   const RadialLauncher({super.key});
+
   @override
   State<RadialLauncher> createState() => _State();
 }
@@ -133,10 +123,17 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (_, c) {
-        final anchor = Offset(c.maxWidth / 2, c.maxHeight - 24);
+        final arcRightReach = _kOuterR * math.cos(_rad(360 - _kArcEnd));
+        final anchor = Offset(
+          math.max(
+            _kOuterR + _kCornerInset,
+            c.maxWidth - arcRightReach - _kCornerInset,
+          ),
+          c.maxHeight - _kHubR - _kCornerInset,
+        );
         return AnimatedBuilder(
           animation: _anim,
-          builder: (_, __) => GestureDetector(
+          builder: (_, _) => GestureDetector(
             onDoubleTap: _toggle,
             onPanUpdate: _pan,
             onPanEnd: _panEnd,
@@ -166,7 +163,7 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
                   top: anchor.dy - _kHubR,
                   child: GestureDetector(
                     onDoubleTap: _toggle,
-                    child: _Hub(t: _anim.value),
+                    child: const _Hub(),
                   ),
                 ),
               ],
@@ -190,12 +187,12 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
           width: 28,
           height: 28,
           decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.13),
+            color: Colors.white.withValues(alpha: 0.13),
             shape: BoxShape.circle,
           ),
           child: Icon(
             left ? Icons.chevron_left : Icons.chevron_right,
-            color: Colors.white.withOpacity(0.85),
+            color: Colors.white.withValues(alpha: 0.85),
             size: 18,
           ),
         ),
@@ -204,39 +201,26 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
   }
 }
 
-// ─── Hub ─────────────────────────────────────────────────
-
 class _Hub extends StatelessWidget {
-  final double t;
-  const _Hub({required this.t});
+  const _Hub();
+
   @override
   Widget build(BuildContext context) => Container(
     width: _kHubR * 2,
     height: _kHubR * 2,
     decoration: BoxDecoration(
       shape: BoxShape.circle,
-      color: const Color(0xFF1C1C1E),
-      border: Border.all(
-        color: Colors.white.withOpacity(0.08 + 0.06 * t),
-        width: 1.5,
-      ),
+      color: const Color(0xFF5C5C5C),
       boxShadow: [
         BoxShadow(
-          color: Colors.black.withOpacity(0.5),
+          color: Colors.black.withValues(alpha: 0.5),
           blurRadius: 20,
           spreadRadius: 4,
         ),
       ],
     ),
-    child: Icon(
-      Icons.apps_rounded,
-      color: Colors.white.withOpacity(0.85),
-      size: 26,
-    ),
   );
 }
-
-// ─── Painter ─────────────────────────────────────────────
 
 class _Painter extends CustomPainter {
   final Offset anchor;
@@ -253,62 +237,37 @@ class _Painter extends CustomPainter {
     required this.sel,
   });
 
-  // Build the full crescent path:
-  //  - outer arc from startDeg → endDeg at _kOuterR
-  //  - rounded cap at end tip  (r = _kCapR)
-  //  - inner arc from endDeg → startDeg at _kInnerR  (reversed)
-  //  - rounded cap at start tip
   Path _crescentPath(double startDeg, double endDeg) {
     final s = _rad(startDeg);
     final e = _rad(endDeg);
-    final sweep = e - s; // positive
+    final sweep = e - s;
     final path = Path();
 
     final outerRect = Rect.fromCircle(center: anchor, radius: _kOuterR);
     final innerRect = Rect.fromCircle(center: anchor, radius: _kInnerR);
 
-    // ── outer arc: s → e ────────────────────────────────
     path.addArc(outerRect, s, sweep);
 
-    // ── end cap (at angle e) ─────────────────────────────
-    // The cap connects outerR at angle e to innerR at angle e.
-    // It's a rounded rectangle whose long axis is radial at angle e.
-    // We approximate this with a bezier round-corner:
-    //   straight line from outer edge inward, with rounded corners.
     final oeX = anchor.dx + _kOuterR * math.cos(e);
     final oeY = anchor.dy + _kOuterR * math.sin(e);
     final ieX = anchor.dx + _kInnerR * math.cos(e);
     final ieY = anchor.dy + _kInnerR * math.sin(e);
 
-    // direction vectors
-    final radDX = math.cos(e); // points outward from anchor
-    final radDY = math.sin(e);
-    // tangent (perpendicular, clockwise)
-    final tanDX = radDY;
-    final tanDY = -radDX;
-
-    // Corner radius clamped to half band width
+    final tanDX = math.sin(e);
+    final tanDY = -math.cos(e);
     final cr = math.min(_kCapR, (_kOuterR - _kInnerR) / 2);
 
-    // We draw: from outer-edge point, curve inward
-    // Using quadratic bezier for the rounded corner feel
-    // Control point offset along tangent = cr
     path.lineTo(oeX + tanDX * cr, oeY + tanDY * cr);
     path.quadraticBezierTo(oeX, oeY, ieX + tanDX * cr, ieY + tanDY * cr);
-
-    // Straight line to where inner arc starts at angle e
     path.lineTo(ieX, ieY);
 
-    // ── inner arc: e → s (reversed) ─────────────────────
     path.addArc(innerRect, e, -sweep);
 
-    // ── start cap (at angle s) ───────────────────────────
     final osX = anchor.dx + _kOuterR * math.cos(s);
     final osY = anchor.dy + _kOuterR * math.sin(s);
     final isX = anchor.dx + _kInnerR * math.cos(s);
     final isY = anchor.dy + _kInnerR * math.sin(s);
 
-    // tangent at s, counter-clockwise (opposite direction for start cap)
     final tanSDX = -math.sin(s);
     final tanSDY = math.cos(s);
 
@@ -333,24 +292,19 @@ class _Painter extends CustomPainter {
     final spanDeg = _kArcEnd - _kArcStart;
     final segDeg = spanDeg / n;
 
-    // ── 1. Draw full crescent background ────────────────
     final bgPath = _crescentPath(_kArcStart, _kArcEnd);
 
-    // soft drop shadow
     canvas.drawPath(
       bgPath,
       Paint()
-        ..color = Colors.black.withOpacity(0.4)
+        ..color = Colors.black.withValues(alpha: 0.4)
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
     );
-    // fill
     canvas.drawPath(bgPath, Paint()..color = const Color(0xFFD9D9D9));
 
-    // ── 2. Clip to crescent so nothing bleeds outside ───
     canvas.save();
     canvas.clipPath(bgPath);
 
-    // ── 3. Selected segment highlight ───────────────────
     if (sel != null) {
       for (int i = 0; i < n; i++) {
         final idx = ((i + offset) % n + n) % n;
@@ -359,7 +313,6 @@ class _Painter extends CustomPainter {
         final segE = _rad(_kArcStart + (i + 1) * segDeg);
         final segSweep = segE - segS;
 
-        // build a wedge path for just this segment
         final wedge = Path();
         wedge.moveTo(anchor.dx, anchor.dy);
         wedge.addArc(
@@ -369,29 +322,22 @@ class _Painter extends CustomPainter {
         );
         wedge.lineTo(anchor.dx, anchor.dy);
 
-        // glow
         canvas.drawPath(
           wedge,
           Paint()
-            ..color = const Color(0xFFFF5C35).withOpacity(0.25)
+            ..color = const Color(0xFFFF5C35).withValues(alpha: 0.25)
             ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
         );
-        // solid tint
         canvas.drawPath(
           wedge,
-          Paint()..color = const Color(0xFFFF5C35).withOpacity(0.6),
+          Paint()..color = const Color(0xFFFF5C35).withValues(alpha: 0.6),
         );
         break;
       }
     }
 
-    // ── 4. Radial divider lines (thin, dark) ────────────
-    canvas.restore(); // end clip
+    canvas.restore();
 
-    // ── 5. Labels ────────────────────────────────────────
-    // Each label is drawn at the angular midpoint of its segment,
-    // at radial midpoint of the band, rotated so text is upright
-    // along the spoke (reading from outer edge toward hub).
     for (int i = 0; i < n; i++) {
       final idx = ((i + offset) % n + n) % n;
       final app = apps[idx];
@@ -411,7 +357,7 @@ class _Painter extends CustomPainter {
             fontSize: isSel ? 10.5 : 9.5,
             fontWeight: FontWeight.w700,
             color: isSel ? Colors.white : const Color(0xFF1A1A1A),
-            letterSpacing: 0.1,
+            letterSpacing: 0,
           ),
         ),
         textDirection: TextDirection.ltr,
@@ -419,18 +365,12 @@ class _Painter extends CustomPainter {
 
       canvas.save();
       canvas.translate(tx, ty);
-
-      // Rotate so text stands radially, reading inward.
-      // midRad points outward. We want text upright along this spoke,
-      // with the top toward the outer edge → rotate by midRad − π/2,
-      // then flip 180° so it reads inward (top = outside).
-      canvas.rotate(midRad + math.pi / 2);
-
+      canvas.rotate(midRad + math.pi);
       tp.paint(canvas, Offset(-tp.width / 2, -tp.height / 2));
       canvas.restore();
     }
 
-    canvas.restore(); // end saveLayer
+    canvas.restore();
   }
 
   @override
