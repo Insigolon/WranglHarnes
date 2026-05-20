@@ -1,10 +1,12 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'chatui.dart';
 
-void main() => runApp(const _App());
+void main() => runApp(const MyApp());
 
-class _App extends StatelessWidget {
-  const _App();
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -84,6 +86,41 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
     parent: _ctrl,
     curve: Curves.easeOutCubic,
   );
+
+  Route<void> _chatRoute() {
+    return PageRouteBuilder(
+      transitionDuration: const Duration(milliseconds: 420),
+      reverseTransitionDuration: const Duration(milliseconds: 280),
+      pageBuilder: (_, _, _) => const ChatScreen(),
+      transitionsBuilder: (_, animation, _, child) {
+        final curved = CurvedAnimation(
+          parent: animation,
+          curve: Curves.easeOutCubic,
+          reverseCurve: Curves.easeInCubic,
+        );
+
+        return FadeTransition(
+          opacity: curved,
+          child: ScaleTransition(
+            scale: Tween<double>(begin: 0.96, end: 1).animate(curved),
+            child: child,
+          ),
+        );
+      },
+    );
+  }
+
+  void _openChat() {
+    HapticFeedback.mediumImpact();
+    if (_open) {
+      setState(() {
+        _open = false;
+        _selSlot = null;
+      });
+      _ctrl.reverse();
+    }
+    Navigator.of(context).push(_chatRoute());
+  }
 
   void _toggle() {
     setState(() {
@@ -216,7 +253,8 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
                 top: anchor.dy - _kHubR,
                 child: GestureDetector(
                   onDoubleTap: _toggle,
-                  child: const _Hub(),
+                  onLongPress: _openChat,
+                  child: const _Hub(key: ValueKey('launcher-hub')),
                 ),
               ),
             ],
@@ -228,7 +266,7 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
 }
 
 class _Hub extends StatelessWidget {
-  const _Hub();
+  const _Hub({super.key});
 
   @override
   Widget build(BuildContext context) => Container(
