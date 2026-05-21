@@ -1,9 +1,21 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
+import 'agent/agent_provider.dart';
+import 'screens/agent_chat_screen.dart';
+import 'screens/model_download_screen.dart';
 import 'chatui.dart';
 
-void main() => runApp(const MyApp());
+
+void main() {
+  runApp(
+    ChangeNotifierProvider(
+      create: (_) => AgentProvider(), // Init is called later in ModelDownloadScreen
+      child: const MyApp(),
+    ),
+  );
+}
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
@@ -12,10 +24,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return const MaterialApp(
       debugShowCheckedModeBanner: false,
-      home: Scaffold(
-        backgroundColor: Color(0xFF0D0D0D),
-        body: SafeArea(child: RadialLauncher()),
-      ),
+      home: ModelDownloadScreen(),
     );
   }
 }
@@ -91,7 +100,7 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
     return PageRouteBuilder(
       transitionDuration: const Duration(milliseconds: 420),
       reverseTransitionDuration: const Duration(milliseconds: 280),
-      pageBuilder: (_, _, _) => const ChatScreen(),
+      pageBuilder: (_, _, _) => const AgentChatScreen(),
       transitionsBuilder: (_, animation, _, child) {
         final curved = CurvedAnimation(
           parent: animation,
