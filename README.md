@@ -1,17 +1,31 @@
 # wranglv0
 
-A new Flutter project.
+WranglHarness is an experimental intent-based launcher for Android.
 
-## Getting Started
+Instead of tapping through apps, menus, and icons, WranglHarness lets you express what you want to do—and handles the execution.
 
-This project is a starting point for a Flutter application.
+------------------------------------------------------------------
+What is an Intent-Based OS?
 
-A few resources to get you started if this is your first Flutter project:
+Modern smartphones are still stuck in the “app grid” era.
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+WranglHarness flips that:
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+You don’t open apps.
+You state intent — the system figures out how.
+
+Examples:
+
+“Order food” → opens the right app with context
+“Call mom” → routes instantly
+“Continue my work” → resumes last relevant workflow
+“Play something relaxing” → picks app + content
+-------------------------------------------------------------------------
+Core Concept
+
+WranglHarness acts as a decision layer on top of Android, using:
+
+User input (text / voice / signals)
+Context (time, usage, history)
+Intent parsing
+Action routing
