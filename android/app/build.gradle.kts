@@ -20,6 +20,9 @@ android {
     }
 
     defaultConfig {
+        // Request a larger Java heap so native libraries can allocate
+        // enough memory for ~512 MiB models (prevents SIGSEGV on initContext).
+
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.example.wranglv0"
         // You can update the following values to match your application needs.
@@ -37,6 +40,13 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+}
+
+dependencies {
+    implementation("com.google.android.play:core:1.10.3")
+    // If using newer split packages, uncomment the following lines instead:
+    // implementation("com.google.android.play:core-common:2.0.3")
+    // implementation("com.google.android.play:feature-delivery:2.1.0")
 }
 
 flutter {

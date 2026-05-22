@@ -45,6 +45,7 @@ class AgentProvider extends ChangeNotifier {
 
   AgentStatus _status = AgentStatus.initialising;
   AgentStatus get status => _status;
+  bool get isModelLoaded => _client != null && _status == AgentStatus.ready;
 
   String? _errorMessage;
   String? get errorMessage => _errorMessage;
@@ -78,8 +79,10 @@ class AgentProvider extends ChangeNotifier {
 
     try {
       _client = FLlamaModelClient(_modelPath!);
+      // Eagerly load the model to catch missing file errors early
+      await _client!.loadModel();
       final dir = await getApplicationDocumentsDirectory();
-      _sessionLogFile = File('\${dir.path}/session_log.jsonl');
+      _sessionLogFile = File('${dir.path}/session_log.jsonl');
       
       // We skip full distillation for now, just load basic brain if exists
       _brainSnapshot = BrainSnapshot(summary: "Local memory active.", topics: [], totalInsights: 0);
@@ -87,7 +90,7 @@ class AgentProvider extends ChangeNotifier {
       _status = AgentStatus.ready;
     } catch (e) {
       _status = AgentStatus.error;
-      _errorMessage = 'Failed to init local model: \$e';
+      _errorMessage = 'Failed to init local model: $e';
     }
     notifyListeners();
   }
@@ -134,7 +137,7 @@ class AgentProvider extends ChangeNotifier {
     } catch (e) {
       _messages.add(ChatMessage(
         isUser: false,
-        text: 'Error: \$e',
+        text: 'Error: $e',
       ));
       _status = AgentStatus.error;
       _errorMessage = e.toString();
@@ -150,7 +153,7 @@ class AgentProvider extends ChangeNotifier {
       "status": result["status"],
       "result_summary": result["result"]?.toString(),
     };
-    await _sessionLogFile.writeAsString(jsonEncode(entry) + "\\n", mode: FileMode.append);
+    await _sessionLogFile.writeAsString('${jsonEncode(entry)}\n', mode: FileMode.append);
   }
 
   Future<String?> flushMemory() async {
@@ -161,5 +164,11 @@ class AgentProvider extends ChangeNotifier {
   void clearMessages() {
     _messages.clear();
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _client?.dispose();
+    super.dispose();
   }
 }

@@ -59,7 +59,7 @@ Future<String> sandboxExec(
   int timeoutS = 10,
 }) async {
   final fn = tools[parsed.tool];
-  if (fn == null) return "ERROR: unknown tool '\${parsed.tool}'";
+  if (fn == null) return "ERROR: unknown tool '${parsed.tool}'";
 
   try {
     // We assume the tool takes a single Map<String, dynamic> of kwargs
@@ -69,9 +69,9 @@ Future<String> sandboxExec(
     final strResult = result.toString();
     return strResult.length > 500 ? strResult.substring(0, 500) : strResult;
   } on TimeoutException {
-    return "ERROR: tool '\${parsed.tool}' timed out after \${timeoutS}s";
+    return "ERROR: tool '${parsed.tool}' timed out after ${timeoutS}s";
   } catch (e) {
-    return "ERROR: \${e.runtimeType}: \$e";
+    return "ERROR: ${e.runtimeType}: $e";
   }
 }
 
@@ -113,7 +113,7 @@ class LoopEvaluator {
 
     final retry =
         "Your previous response had issues:\n" +
-        failures.map((f) => "  - \${f.reason}").join("\n") +
+        failures.map((f) => "  - ${f.reason}").join("\n") +
         "\nPlease try again addressing each issue.";
 
     return EvalResult(
@@ -181,8 +181,8 @@ class ToolHallucinationCheck implements LoopCheck {
       return EvalResult(
         false,
         0.0,
-        "Model called non-existent tool '\${parsed.tool}'",
-        "Available tools are: \$validTools. Use ONLY these exact names.",
+        "Model called non-existent tool '${parsed.tool}'",
+        "Available tools are: $validTools. Use ONLY these exact names.",
       );
     }
     return EvalResult(true, 1.0, "", "");

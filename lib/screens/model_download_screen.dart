@@ -1,4 +1,5 @@
 import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
@@ -33,7 +34,7 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
     final dir = await getApplicationDocumentsDirectory();
     final files = dir.listSync().whereType<File>().where((f) => f.path.endsWith('.gguf')).toList();
     if (files.isNotEmpty) {
-      _startApp(files.first.path);
+      await _startApp(files.first.path);
     }
   }
 
@@ -47,12 +48,15 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
     try {
       final dir = await getApplicationDocumentsDirectory();
       final filename = url.split('/').last;
-      final path = '\${dir.path}/\$filename';
+      final path = '${dir.path}/$filename';
 
       final request = http.Request('GET', Uri.parse(url));
       final response = await http.Client().send(request);
+      if (response.statusCode != 200) {
+        throw HttpException('Failed to download (status ${response.statusCode})');
+      }
+
       final total = response.contentLength ?? 0;
-      
       int downloaded = 0;
       final file = File(path);
       final sink = file.openWrite();
@@ -63,7 +67,8 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
         if (total > 0) {
           setState(() {
             _progress = downloaded / total;
-            _statusMessage = 'Downloading \$name: \${(_progress * 100).toStringAsFixed(1)}%';
+            _statusMessage =
+                'Downloading $name: ${(_progress * 100).toStringAsFixed(1)}%';
           });
         }
       }).asFuture();
@@ -72,17 +77,32 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
       _startApp(path);
     } catch (e) {
       setState(() {
+        _statusMessage = 'Download failed: $e';
+      });
+    } finally {
+      setState(() {
         _isDownloading = false;
-        _statusMessage = 'Download failed: \$e';
       });
     }
   }
 
-  void _startApp(String modelPath) {
-    context.read<AgentProvider>().init(modelPath);
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => const RadialLauncher()),
-    );
+  Future<void> _startApp(String modelPath) async {
+    try {
+      debugPrint('Model path passed to AgentProvider: $modelPath');
+      await context.read<AgentProvider>().init(modelPath);
+      if (!mounted) return;
+      if (!context.read<AgentProvider>().isModelLoaded) {
+        throw Exception('Model failed to load');
+      }
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const RadialLauncher()),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to start app: $e')),
+      );
+    }
   }
 
   @override
