@@ -7,6 +7,21 @@ import 'agent/agent_provider.dart';
 import 'screens/agent_chat_screen.dart';
 import 'screens/model_download_screen.dart';
 
+class _AppLauncher {
+  static const _ch = MethodChannel('app.launcher/apps');
+
+  static Future<List<AppEntry>> getInstalledApps() async {
+    final raw = await _ch.invokeListMethod<Map>('getInstalledApps') ?? [];
+    return raw
+        .map((m) => AppEntry(m['packageName'] as String, m['label'] as String))
+        .toList();
+  }
+
+  static Future<void> openApp(String packageName) async {
+    await _ch.invokeMethod<bool>('launchApp', {'packageName': packageName});
+  }
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await FlutterGemma.initialize();
@@ -31,24 +46,9 @@ class MyApp extends StatelessWidget {
 }
 
 class AppEntry {
-  final String id, label;
-  const AppEntry(this.id, this.label);
+  final String packageName, label;
+  const AppEntry(this.packageName, this.label);
 }
-
-const _kApps = [
-  AppEntry('a', 'Claude'),
-  AppEntry('b', 'Whatsapp'),
-  AppEntry('c', 'Phone'),
-  AppEntry('d', 'Brave'),
-  AppEntry('e', 'Instagram'),
-  AppEntry('f', 'Maps'),
-  AppEntry('g', 'Twitter'),
-  AppEntry('h', 'Duolingo'),
-  AppEntry('i', 'Drive'),
-  AppEntry('j', 'Gmail'),
-  AppEntry('k', 'Spotify'),
-  AppEntry('l', 'YouTube'),
-];
 
 const double _kArcStart = 205.0;
 const double _kArcEnd = 335.0;
@@ -61,7 +61,7 @@ const double _kCornerInset = 12.0 * _kLauncherScale;
 const double _kButtonSweep = 18.0;
 const double _kMenuStart = _kArcStart + _kButtonSweep;
 const double _kMenuEnd = _kArcEnd - _kButtonSweep;
-const int _kVisibleAppCount = 9;
+const int _kVisibleAppCount = 7;
 
 const double _kDegToRad = math.pi / 180;
 const double _kArcStartRad = _kArcStart * _kDegToRad;
@@ -79,13 +79,15 @@ class RadialLauncher extends StatefulWidget {
   const RadialLauncher({super.key});
 
   @override
-  State<RadialLauncher> createState() => _State();
+  State<RadialLauncher> createState() => _RadialLauncherState();
 }
 
-class _State extends State<RadialLauncher> with TickerProviderStateMixin {
+class _RadialLauncherState extends State<RadialLauncher>
+    with TickerProviderStateMixin {
   bool _open = false;
   int? _selSlot;
   int _offset = 0;
+  List<AppEntry> _apps = const [];
   final Stopwatch _pageStopwatch = Stopwatch()..start();
 
   late final AnimationController _ctrl = AnimationController(
@@ -96,6 +98,30 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
     parent: _ctrl,
     curve: Curves.easeOutCubic,
   );
+
+  @override
+  void initState() {
+    super.initState();
+    _loadApps();
+  }
+
+  Future<void> _loadApps() async {
+    final entries = await _AppLauncher.getInstalledApps();
+    if (mounted) setState(() => _apps = entries);
+  }
+
+  void _launchSelected() {
+    if (_selSlot == null || _apps.isEmpty) return;
+    final idx =
+        ((_selSlot! + _offset) % _apps.length + _apps.length) % _apps.length;
+    _AppLauncher.openApp(_apps[idx].packageName);
+    HapticFeedback.lightImpact();
+    setState(() {
+      _open = false;
+      _selSlot = null;
+    });
+    _ctrl.reverse();
+  }
 
   Route<void> _chatRoute() {
     return PageRouteBuilder(
@@ -108,7 +134,6 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
           curve: Curves.easeOutCubic,
           reverseCurve: Curves.easeInCubic,
         );
-
         return FadeTransition(
           opacity: curved,
           child: ScaleTransition(
@@ -153,15 +178,21 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
   void _panEnd(DragEndDetails d) {
     if (!_open) return;
     final vx = d.velocity.pixelsPerSecond.dx;
-    if (vx.abs() < 650) return;
-    _nudge(vx > 0 ? 1 : -1, clearSelection: true);
+    if (vx.abs() < 650) {
+      // Slow release on a slot = launch it.
+      if (_selSlot != null) _launchSelected();
+      return;
+    }
+    // Fast swipe = page by a full slide.
+    _nudge(vx > 0 ? _kVisibleAppCount : -_kVisibleAppCount,
+        clearSelection: true);
   }
 
   void _nudge(int d, {bool clearSelection = false}) {
-    final total = _kApps.length;
+    final total = _apps.length;
     if (total == 0) return;
     setState(() {
-      _offset = (_offset + d) % total;
+      _offset = ((_offset + d) % total + total) % total;
       if (clearSelection) _selSlot = null;
     });
   }
@@ -198,7 +229,7 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
       return;
     }
 
-    final total = _kApps.length;
+    final total = _apps.length;
     final visible = math.min(_kVisibleAppCount, total);
     if (visible == 0) return;
     final slot = (((ang - _kMenuStartRad) / _kMenuSpanRad) * visible)
@@ -230,47 +261,56 @@ class _State extends State<RadialLauncher> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (_, c) {
-        final anchor = _computeAnchor(c);
-        return GestureDetector(
-          onDoubleTap: _toggle,
-          onPanStart: (d) => _panStart(d, anchor),
-          onPanUpdate: (d) => _pan(d, anchor),
-          onPanEnd: _panEnd,
-          onTapDown: (d) => _tap(d, anchor),
-          child: Stack(
-            clipBehavior: Clip.none,
-            children: [
-              Positioned.fill(
-                child: FadeTransition(
-                  opacity: _anim,
-                  child: RepaintBoundary(
-                    child: CustomPaint(
-                      painter: _Painter(
-                        anchor: anchor,
-                        apps: _kApps,
-                        offset: _offset,
-                        selectedSlot: _selSlot,
+    return PopScope(
+      canPop: false,
+      child: Scaffold(
+        backgroundColor: const Color(0xFF0D0D0D),
+        body: LayoutBuilder(
+          builder: (_, c) {
+            final anchor = _computeAnchor(c);
+            return GestureDetector(
+              onDoubleTap: _toggle,
+              onPanStart: (d) => _panStart(d, anchor),
+              onPanUpdate: (d) => _pan(d, anchor),
+              onPanEnd: _panEnd,
+              onTapDown: (d) => _tap(d, anchor),
+              onTap: () {
+                if (_open && _selSlot != null) _launchSelected();
+              },
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  Positioned.fill(
+                    child: FadeTransition(
+                      opacity: _anim,
+                      child: RepaintBoundary(
+                        child: CustomPaint(
+                          painter: _Painter(
+                            anchor: anchor,
+                            apps: _apps,
+                            offset: _offset,
+                            selectedSlot: _selSlot,
+                          ),
+                          child: const SizedBox.expand(),
+                        ),
                       ),
-                      child: const SizedBox.expand(),
                     ),
                   ),
-                ),
+                  Positioned(
+                    left: anchor.dx - _kHubR,
+                    top: anchor.dy - _kHubR,
+                    child: GestureDetector(
+                      onDoubleTap: _toggle,
+                      onLongPress: _openChat,
+                      child: const _Hub(key: ValueKey('launcher-hub')),
+                    ),
+                  ),
+                ],
               ),
-              Positioned(
-                left: anchor.dx - _kHubR,
-                top: anchor.dy - _kHubR,
-                child: GestureDetector(
-                  onDoubleTap: _toggle,
-                  onLongPress: _openChat,
-                  child: const _Hub(key: ValueKey('launcher-hub')),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
+            );
+          },
+        ),
+      ),
     );
   }
 }
@@ -287,7 +327,7 @@ class _Hub extends StatelessWidget {
       color: const Color(0xFF5C5C5C),
       boxShadow: [
         BoxShadow(
-          color: Colors.black.withOpacity(0.5),
+          color: Colors.black.withValues(alpha: 0.5),
           blurRadius: 20 * _kLauncherScale,
           spreadRadius: 4 * _kLauncherScale,
         ),
@@ -318,22 +358,22 @@ class _Painter extends CustomPainter {
     ..strokeWidth = 4.5 * _kLauncherScale
     ..strokeCap = StrokeCap.round;
   static final Paint _previewShadowPaint = Paint()
-    ..color = Colors.black.withOpacity(0.35)
-    ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8 * _kLauncherScale);
+    ..color = Colors.black.withValues(alpha: 0.35)
+    ..maskFilter =
+        const MaskFilter.blur(BlurStyle.normal, 8 * _kLauncherScale);
   static final Paint _previewFillPaint = Paint()
     ..color = const Color(0xFFD9D9D9);
   static final Paint _bgShadowPaint = Paint()
-    ..color = Colors.black.withOpacity(0.4)
-    ..maskFilter = const MaskFilter.blur(
-      BlurStyle.normal,
-      10 * _kLauncherScale,
-    );
+    ..color = Colors.black.withValues(alpha: 0.4)
+    ..maskFilter =
+        const MaskFilter.blur(BlurStyle.normal, 10 * _kLauncherScale);
   static final Paint _bgFillPaint = Paint()..color = const Color(0xFFD9D9D9);
   static final Paint _selectionGlowPaint = Paint()
-    ..color = const Color(0xFFFF5C35).withOpacity(0.25)
-    ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8 * _kLauncherScale);
+    ..color = const Color(0xFFFF5C35).withValues(alpha: 0.25)
+    ..maskFilter =
+        const MaskFilter.blur(BlurStyle.normal, 8 * _kLauncherScale);
   static final Paint _selectionFillPaint = Paint()
-    ..color = const Color(0xFFFF5C35).withOpacity(0.6);
+    ..color = const Color(0xFFFF5C35).withValues(alpha: 0.6);
   static final Path _previewTabPath = _buildPreviewTabPath();
 
   final Offset anchor;
