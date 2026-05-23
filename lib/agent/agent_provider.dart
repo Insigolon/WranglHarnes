@@ -1,14 +1,5 @@
-// lib/agent/agent_provider.dart
-
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/foundation.dart';
-import 'package:path_provider/path_provider.dart';
-import 'fllama_client.dart';
-import 'skill.dart';
-import 'skill_router.dart';
-import 'agent_loop.dart';
+import 'gemma_client.dart';
 
 class BrainSnapshot {
   final String summary;
@@ -39,13 +30,10 @@ class ChatMessage {
 }
 
 class AgentProvider extends ChangeNotifier {
-  FLlamaModelClient? _client;
-  late SkillRouter _router;
-  late File _sessionLogFile;
+  GemmaModelClient? _client;
 
   AgentStatus _status = AgentStatus.initialising;
   AgentStatus get status => _status;
-  bool get isModelLoaded => _client != null && _status == AgentStatus.ready;
 
   String? _errorMessage;
   String? get errorMessage => _errorMessage;
@@ -53,23 +41,22 @@ class AgentProvider extends ChangeNotifier {
   final List<ChatMessage> _messages = [];
   List<ChatMessage> get messages => List.unmodifiable(_messages);
 
-  BrainSnapshot? _brainSnapshot;
-  BrainSnapshot? get brainSnapshot => _brainSnapshot;
+  final BrainSnapshot brainSnapshot = const BrainSnapshot(
+    summary: 'Local memory active.',
+    topics: [],
+    totalInsights: 0,
+  );
 
   String? _modelPath;
 
-  AgentProvider() {
-    _router = SkillRouter([ChatSkill()]);
-  }
+  static const _systemPrompt =
+      'You are a helpful AI assistant. Answer the user\'s request concisely.';
 
   Future<void> init([String? modelPath]) async {
-    if (modelPath != null) {
-      _modelPath = modelPath;
-    }
-    
+    if (modelPath != null) _modelPath = modelPath;
     if (_modelPath == null) {
       _status = AgentStatus.error;
-      _errorMessage = "Cannot init without model path.";
+      _errorMessage = 'Cannot init without model path.';
       notifyListeners();
       return;
     }
@@ -78,19 +65,15 @@ class AgentProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      _client = FLlamaModelClient(_modelPath!);
-      // Eagerly load the model to catch missing file errors early
+      _client = GemmaModelClient(_modelPath!);
       await _client!.loadModel();
-      final dir = await getApplicationDocumentsDirectory();
-      _sessionLogFile = File('${dir.path}/session_log.jsonl');
-      
-      // We skip full distillation for now, just load basic brain if exists
-      _brainSnapshot = BrainSnapshot(summary: "Local memory active.", topics: [], totalInsights: 0);
-      
       _status = AgentStatus.ready;
-    } catch (e) {
+    } catch (e, st) {
       _status = AgentStatus.error;
       _errorMessage = 'Failed to init local model: $e';
+      debugPrint('[agent] init error: $e\n$st');
+      notifyListeners();
+      rethrow;
     }
     notifyListeners();
   }
@@ -103,62 +86,35 @@ class AgentProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final skill = await _router.routeSkill(task, _client!);
-      
-      if (skill == null) {
-        throw Exception("No matching skill found.");
+      // Build conversation history from all messages (cap at 20 to stay within nCtx)
+      final history = _messages
+          .map((m) => <String, dynamic>{
+                'role': m.isUser ? 'user' : 'assistant',
+                'content': m.text,
+              })
+          .toList();
+      if (history.length > 20) {
+        history.removeRange(0, history.length - 20);
       }
 
-      final evaluator = LoopEvaluator([
-        FormatCheck(),
-        LoopDetector(),
-        ToolHallucinationCheck(skill.tools.keys.toList()),
-      ]);
-
-      final loop = AgentLoop(
-        modelClient: _client!,
-        tools: skill.tools,
-        evaluator: evaluator,
-        systemPrompt: skill.systemPrompt,
+      final raw = await _client!.complete(
+        _systemPrompt,
+        history,
+        maxTokens: 512,
       );
 
-      final result = await loop.runTask(task);
-      result['skill_used'] = skill.name;
-
-      // Log session
-      await _logSessionEvent(skill.name, task, result);
-
-      _messages.add(ChatMessage(
-        isUser: false,
-        text: result['result']?.toString() ?? result['reason']?.toString() ?? 'No response',
-        skillUsed: skill.name,
-      ));
+      _messages.add(ChatMessage(isUser: false, text: raw, skillUsed: 'chat'));
       _status = AgentStatus.ready;
     } catch (e) {
-      _messages.add(ChatMessage(
-        isUser: false,
-        text: 'Error: $e',
-      ));
+      _messages.add(ChatMessage(isUser: false, text: 'Error: $e'));
       _status = AgentStatus.error;
       _errorMessage = e.toString();
     }
     notifyListeners();
   }
 
-  Future<void> _logSessionEvent(String skillName, String task, Map<String, dynamic> result) async {
-    final entry = {
-      "ts": DateTime.now().toIso8601String(),
-      "skill": skillName,
-      "task": task,
-      "status": result["status"],
-      "result_summary": result["result"]?.toString(),
-    };
-    await _sessionLogFile.writeAsString('${jsonEncode(entry)}\n', mode: FileMode.append);
-  }
-
   Future<String?> flushMemory() async {
-    // Skip heavy LLM distillation for now.
-    return "Memory flushed (local log updated).";
+    return 'Memory flushed (local log updated).';
   }
 
   void clearMessages() {

@@ -1,8 +1,8 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import '../agent/agent_provider.dart';
 import '../main.dart' show RadialLauncher;
@@ -17,12 +17,12 @@ class ModelDownloadScreen extends StatefulWidget {
 class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
   bool _isDownloading = false;
   double _progress = 0.0;
-  String _statusMessage = 'Select a model to download';
+  String _statusMessage = 'Checking for Gemma 4 model...';
 
-  final _models = {
-    'TinyLlama (Fast, ~700MB)': 'https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf',
-    'Phi-2 (Smarter, ~1.7GB)': 'https://huggingface.co/TheBloke/phi-2-GGUF/resolve/main/phi-2.Q4_K_M.gguf',
-  };
+  static const _modelFilename = 'gemma-4-E2B-it.litertlm';
+  static const _modelDisplayName = 'Gemma 4 2B (~2.6 GB)';
+  static const _modelUrl =
+      'https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm';
 
   @override
   void initState() {
@@ -30,36 +30,49 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
     _checkExistingModel();
   }
 
-  Future<void> _checkExistingModel() async {
+  Future<String> _modelPath() async {
     final dir = await getApplicationDocumentsDirectory();
-    final files = dir.listSync().whereType<File>().where((f) => f.path.endsWith('.gguf')).toList();
-    if (files.isNotEmpty) {
-      await _startApp(files.first.path);
+    return '${dir.path}/$_modelFilename';
+  }
+
+  Future<void> _checkExistingModel() async {
+    final path = await _modelPath();
+    final file = File(path);
+    if (await file.exists() && await file.length() > 100 * 1024 * 1024) {
+      await _startApp(path);
+      return;
+    }
+    if (mounted) {
+      setState(() => _statusMessage = 'Model not found. Starting download...');
+      await _downloadModel();
     }
   }
 
-  Future<void> _downloadModel(String name, String url) async {
+  Future<void> _downloadModel() async {
     setState(() {
       _isDownloading = true;
       _progress = 0.0;
       _statusMessage = 'Starting download...';
     });
 
-    try {
-      final dir = await getApplicationDocumentsDirectory();
-      final filename = url.split('/').last;
-      final path = '${dir.path}/$filename';
+    final path = await _modelPath();
+    final partialPath = '$path.part';
 
-      final request = http.Request('GET', Uri.parse(url));
+    try {
+      if (File(partialPath).existsSync()) {
+        await File(partialPath).delete();
+      }
+
+      final request = http.Request('GET', Uri.parse(_modelUrl));
       final response = await http.Client().send(request);
+
       if (response.statusCode != 200) {
-        throw HttpException('Failed to download (status ${response.statusCode})');
+        throw HttpException('Download failed (status ${response.statusCode})');
       }
 
       final total = response.contentLength ?? 0;
       int downloaded = 0;
-      final file = File(path);
-      final sink = file.openWrite();
+      final sink = File(partialPath).openWrite();
 
       await response.stream.listen((chunk) {
         sink.add(chunk);
@@ -68,41 +81,65 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
           setState(() {
             _progress = downloaded / total;
             _statusMessage =
-                'Downloading $name: ${(_progress * 100).toStringAsFixed(1)}%';
+                'Downloading: ${(_progress * 100).toStringAsFixed(1)}%'
+                ' (${_fmt(downloaded)} / ${_fmt(total)})';
           });
         }
       }).asFuture();
 
       await sink.close();
-      _startApp(path);
+
+      if (total > 0 && downloaded < total) {
+        throw HttpException(
+            'Incomplete download (${_fmt(downloaded)} of ${_fmt(total)})');
+      }
+
+      final dest = File(path);
+      if (dest.existsSync()) await dest.delete();
+      await File(partialPath).rename(path);
+
+      await _startApp(path);
     } catch (e) {
-      setState(() {
-        _statusMessage = 'Download failed: $e';
-      });
+      debugPrint('[download] Error: $e');
+      if (File(partialPath).existsSync()) {
+        try { await File(partialPath).delete(); } catch (_) {}
+      }
+      if (mounted) {
+        setState(() => _statusMessage = 'Download failed: $e\n\nTap to retry.');
+      }
     } finally {
-      setState(() {
-        _isDownloading = false;
-      });
+      if (mounted) setState(() => _isDownloading = false);
     }
   }
 
   Future<void> _startApp(String modelPath) async {
+    final provider = context.read<AgentProvider>();
     try {
-      debugPrint('Model path passed to AgentProvider: $modelPath');
-      await context.read<AgentProvider>().init(modelPath);
+      setState(() => _statusMessage = 'Loading model...');
+
+      // Register the downloaded file with flutter_gemma and initialise the provider
+      await provider.init(modelPath);
+
       if (!mounted) return;
-      if (!context.read<AgentProvider>().isModelLoaded) {
-        throw Exception('Model failed to load');
-      }
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const RadialLauncher()),
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to start app: $e')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Failed to start: $e')));
+      setState(() => _statusMessage = 'Model load failed.\n$e');
     }
+  }
+
+  String _fmt(int bytes) {
+    if (bytes >= 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
+    }
+    if (bytes >= 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(0)} MB';
+    }
+    return '$bytes B';
   }
 
   @override
@@ -124,22 +161,21 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
               ),
               const SizedBox(height: 32),
               if (_isDownloading) ...[
-                LinearProgressIndicator(value: _progress, color: Colors.purpleAccent),
+                LinearProgressIndicator(
+                  value: _progress,
+                  color: Colors.purpleAccent,
+                ),
               ] else ...[
-                for (final entry in _models.entries)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 12.0),
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.white10,
-                        foregroundColor: Colors.white,
-                        minimumSize: const Size(double.infinity, 50),
-                      ),
-                      onPressed: () => _downloadModel(entry.key, entry.value),
-                      child: Text(entry.key),
-                    ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.white10,
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size(double.infinity, 50),
                   ),
-              ]
+                  onPressed: _downloadModel,
+                  child: const Text(_modelDisplayName),
+                ),
+              ],
             ],
           ),
         ),

@@ -2,148 +2,14 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-class ChatScreen extends StatefulWidget {
-  const ChatScreen({super.key});
-
-  @override
-  State<ChatScreen> createState() => _ChatScreenState();
-}
-
-class _ChatScreenState extends State<ChatScreen> {
-  final TextEditingController _controller = TextEditingController();
-  final ScrollController _scrollController = ScrollController();
-
-  final List<_ChatMessage> _messages = [
-    const _ChatMessage(
-      sender: 'SYSTEM',
-      stamp: '00:01',
-      body: 'LOW LIGHT CHANNEL ESTABLISHED. INPUT SIGNAL IS CLEAN.',
-    ),
-    const _ChatMessage(
-      sender: 'WRANGL',
-      stamp: '00:03',
-      body: 'Ask, draft, route, or decode. I am holding the line.',
-    ),
-    const _ChatMessage(
-      sender: 'YOU',
-      stamp: '00:04',
-      body: 'Keep it sharp. Show me the useful thread.',
-      fromUser: true,
-    ),
-    const _ChatMessage(
-      sender: 'WRANGL',
-      stamp: '00:05',
-      body: 'Thread pinned. Context window open. Noise floor minimal.',
-    ),
-  ];
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    _scrollController.dispose();
-    super.dispose();
-  }
-
-  void _send() {
-    final text = _controller.text.trim();
-    if (text.isEmpty) return;
-
-    setState(() {
-      _messages.add(
-        _ChatMessage(
-          sender: 'YOU',
-          stamp: _stamp(),
-          body: text,
-          fromUser: true,
-        ),
-      );
-      _messages.add(
-        _ChatMessage(
-          sender: 'WRANGL',
-          stamp: _stamp(offsetSeconds: 1),
-          body: 'ACK RECEIVED. I am folding that into the active signal.',
-        ),
-      );
-    });
-    _controller.clear();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
-  }
-
-  String _stamp({int offsetSeconds = 0}) {
-    final now = DateTime.now().add(Duration(seconds: offsetSeconds));
-    final hour = now.hour.toString().padLeft(2, '0');
-    final minute = now.minute.toString().padLeft(2, '0');
-    return '$hour:$minute';
-  }
-
-  void _scrollToBottom() {
-    if (!_scrollController.hasClients) return;
-    _scrollController.animateTo(
-      _scrollController.position.maxScrollExtent,
-      duration: const Duration(milliseconds: 260),
-      curve: Curves.easeOutCubic,
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      resizeToAvoidBottomInset: true,
-      backgroundColor: const Color(0xFF080808),
-      body: SafeArea(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final isWide = constraints.maxWidth >= 760;
-            final maxWidth = isWide ? 940.0 : 520.0;
-
-            return Center(
-              child: ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: maxWidth),
-                child: Padding(
-                  padding: EdgeInsets.fromLTRB(
-                    isWide ? 24 : 14,
-                    12,
-                    isWide ? 24 : 14,
-                    14,
-                  ),
-                  child: isWide
-                      ? Row(
-                          children: [
-                            const _SideRail(),
-                            const SizedBox(width: 14),
-                            Expanded(
-                              child: _ChatColumn(
-                                controller: _controller,
-                                scrollController: _scrollController,
-                                messages: _messages,
-                                onSend: _send,
-                              ),
-                            ),
-                          ],
-                        )
-                      : _ChatColumn(
-                          controller: _controller,
-                          scrollController: _scrollController,
-                          messages: _messages,
-                          onSend: _send,
-                        ),
-                ),
-              ),
-            );
-          },
-        ),
-      ),
-    );
-  }
-}
-
-class _ChatMessage {
+/// Display model for a single line in the Wrangl chat transcript.
+class WranglChatMessage {
   final String sender;
   final String stamp;
   final String body;
   final bool fromUser;
 
-  const _ChatMessage({
+  const WranglChatMessage({
     required this.sender,
     required this.stamp,
     required this.body,
@@ -151,17 +17,115 @@ class _ChatMessage {
   });
 }
 
+/// Full-screen Wrangl chat layout (top panel, signal header, transcript, composer).
+class WranglChatScaffold extends StatelessWidget {
+  final List<WranglChatMessage> messages;
+  final TextEditingController controller;
+  final ScrollController scrollController;
+  final VoidCallback onSend;
+  final bool inputEnabled;
+  final bool isLoading;
+  final Widget? overlay;
+  final VoidCallback? onBrain;
+  final VoidCallback? onFlush;
+
+  const WranglChatScaffold({
+    super.key,
+    required this.messages,
+    required this.controller,
+    required this.scrollController,
+    required this.onSend,
+    this.inputEnabled = true,
+    this.isLoading = false,
+    this.overlay,
+    this.onBrain,
+    this.onFlush,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      resizeToAvoidBottomInset: true,
+      backgroundColor: const Color(0xFF080808),
+      body: SafeArea(
+        child: Stack(
+          children: [
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final isWide = constraints.maxWidth >= 760;
+                final maxWidth = isWide ? 940.0 : 520.0;
+
+                return Center(
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: maxWidth),
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        isWide ? 24 : 14,
+                        12,
+                        isWide ? 24 : 14,
+                        14,
+                      ),
+                      child: isWide
+                          ? Row(
+                              children: [
+                                const _SideRail(),
+                                const SizedBox(width: 14),
+                                Expanded(
+                                  child: _ChatColumn(
+                                    controller: controller,
+                                    scrollController: scrollController,
+                                    messages: messages,
+                                    onSend: onSend,
+                                    inputEnabled: inputEnabled && !isLoading,
+                                    isLoading: isLoading,
+                                    onBrain: onBrain,
+                                    onFlush: onFlush,
+                                  ),
+                                ),
+                              ],
+                            )
+                          : _ChatColumn(
+                              controller: controller,
+                              scrollController: scrollController,
+                              messages: messages,
+                              onSend: onSend,
+                              inputEnabled: inputEnabled && !isLoading,
+                              isLoading: isLoading,
+                              onBrain: onBrain,
+                              onFlush: onFlush,
+                            ),
+                    ),
+                  ),
+                );
+              },
+            ),
+            if (overlay != null) Positioned.fill(child: overlay!),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ChatColumn extends StatelessWidget {
   final TextEditingController controller;
   final ScrollController scrollController;
-  final List<_ChatMessage> messages;
+  final List<WranglChatMessage> messages;
   final VoidCallback onSend;
+  final bool inputEnabled;
+  final bool isLoading;
+  final VoidCallback? onBrain;
+  final VoidCallback? onFlush;
 
   const _ChatColumn({
     required this.controller,
     required this.scrollController,
     required this.messages,
     required this.onSend,
+    required this.inputEnabled,
+    required this.isLoading,
+    this.onBrain,
+    this.onFlush,
   });
 
   @override
@@ -172,7 +136,11 @@ class _ChatColumn extends StatelessWidget {
 
         return Column(
           children: [
-            _TopPanel(compact: compactHeight),
+            _TopPanel(
+              compact: compactHeight,
+              onBrain: onBrain,
+              onFlush: onFlush,
+            ),
             const SizedBox(height: 14),
             Expanded(
               child: _ConversationPanel(
@@ -180,6 +148,8 @@ class _ChatColumn extends StatelessWidget {
                 scrollController: scrollController,
                 messages: messages,
                 onSend: onSend,
+                inputEnabled: inputEnabled,
+                isLoading: isLoading,
               ),
             ),
           ],
@@ -191,8 +161,10 @@ class _ChatColumn extends StatelessWidget {
 
 class _TopPanel extends StatelessWidget {
   final bool compact;
+  final VoidCallback? onBrain;
+  final VoidCallback? onFlush;
 
-  const _TopPanel({required this.compact});
+  const _TopPanel({required this.compact, this.onBrain, this.onFlush});
 
   @override
   Widget build(BuildContext context) {
@@ -203,7 +175,7 @@ class _TopPanel extends StatelessWidget {
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.42),
+            color: Colors.black.withOpacity(0.42),
             blurRadius: 24,
             offset: const Offset(0, 14),
           ),
@@ -241,7 +213,29 @@ class _TopPanel extends StatelessWidget {
                     ),
                   ),
                 ),
-                const SizedBox(width: 14),
+                if (onBrain != null) ...[
+                  const SizedBox(width: 8),
+                  Tooltip(
+                    message: 'Second Brain',
+                    child: _IconDisc(
+                      icon: Icons.psychology_outlined,
+                      onPressed: onBrain!,
+                      light: true,
+                    ),
+                  ),
+                ],
+                if (onFlush != null) ...[
+                  const SizedBox(width: 8),
+                  Tooltip(
+                    message: 'Flush memory',
+                    child: _IconDisc(
+                      icon: Icons.memory,
+                      onPressed: onFlush!,
+                      light: true,
+                    ),
+                  ),
+                ],
+                const SizedBox(width: 8),
                 const SizedBox(
                   width: 86,
                   height: 42,
@@ -268,7 +262,7 @@ class _TopPanel extends StatelessWidget {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                  color: Colors.black.withValues(alpha: 0.74),
+                  color: Colors.black.withOpacity(0.74),
                   fontSize: 8,
                   fontWeight: FontWeight.w800,
                   letterSpacing: 0,
@@ -322,14 +316,18 @@ class _TopPanel extends StatelessWidget {
 class _ConversationPanel extends StatelessWidget {
   final TextEditingController controller;
   final ScrollController scrollController;
-  final List<_ChatMessage> messages;
+  final List<WranglChatMessage> messages;
   final VoidCallback onSend;
+  final bool inputEnabled;
+  final bool isLoading;
 
   const _ConversationPanel({
     required this.controller,
     required this.scrollController,
     required this.messages,
     required this.onSend,
+    required this.inputEnabled,
+    required this.isLoading,
   });
 
   @override
@@ -344,20 +342,36 @@ class _ConversationPanel extends StatelessWidget {
         borderRadius: BorderRadius.circular(21),
         child: Column(
           children: [
-            const _SignalHeader(),
+            _SignalHeader(isLoading: isLoading),
             const Divider(height: 1, color: Color(0xFF4B4B4B)),
             Expanded(
-              child: ListView.separated(
-                controller: scrollController,
-                padding: const EdgeInsets.fromLTRB(14, 16, 14, 16),
-                itemCount: messages.length,
-                separatorBuilder: (_, _) => const SizedBox(height: 11),
-                itemBuilder: (context, index) {
-                  return _MessageTile(message: messages[index]);
-                },
-              ),
+              child: messages.isEmpty
+                  ? Center(
+                      child: Text(
+                        'TRANSMIT SIGNAL TO OPEN THREAD',
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.38),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0,
+                        ),
+                      ),
+                    )
+                  : ListView.separated(
+                      controller: scrollController,
+                      padding: const EdgeInsets.fromLTRB(14, 16, 14, 16),
+                      itemCount: messages.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 11),
+                      itemBuilder: (context, index) {
+                        return _MessageTile(message: messages[index]);
+                      },
+                    ),
             ),
-            _Composer(controller: controller, onSend: onSend),
+            _Composer(
+              controller: controller,
+              onSend: onSend,
+              enabled: inputEnabled,
+            ),
           ],
         ),
       ),
@@ -366,7 +380,9 @@ class _ConversationPanel extends StatelessWidget {
 }
 
 class _SignalHeader extends StatelessWidget {
-  const _SignalHeader();
+  final bool isLoading;
+
+  const _SignalHeader({required this.isLoading});
 
   @override
   Widget build(BuildContext context) {
@@ -390,7 +406,7 @@ class _SignalHeader extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.64),
+                      color: Colors.white.withOpacity(0.64),
                       fontSize: 9,
                       fontWeight: FontWeight.w700,
                       letterSpacing: 0,
@@ -412,9 +428,9 @@ class _SignalHeader extends StatelessWidget {
                   const Spacer(),
                   Container(height: 1, color: const Color(0xFF6F6F6F)),
                   const SizedBox(height: 6),
-                  const Row(
+                  Row(
                     children: [
-                      Expanded(
+                      const Expanded(
                         child: Text(
                           'ISO 3166 code',
                           style: TextStyle(
@@ -425,15 +441,25 @@ class _SignalHeader extends StatelessWidget {
                           ),
                         ),
                       ),
-                      Text(
-                        'WR-CHAT',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 0,
+                      if (isLoading)
+                        const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Color(0xFFE8E7E3),
+                          ),
+                        )
+                      else
+                        const Text(
+                          'WR-CHAT',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 0,
+                          ),
                         ),
-                      ),
                     ],
                   ),
                 ],
@@ -454,7 +480,7 @@ class _SignalHeader extends StatelessWidget {
 }
 
 class _MessageTile extends StatelessWidget {
-  final _ChatMessage message;
+  final WranglChatMessage message;
 
   const _MessageTile({required this.message});
 
@@ -501,7 +527,7 @@ class _MessageTile extends StatelessWidget {
                             style: TextStyle(
                               color: isUser
                                   ? const Color(0xFF151515)
-                                  : Colors.white.withValues(alpha: 0.74),
+                                  : Colors.white.withOpacity(0.74),
                               fontSize: 10,
                               fontWeight: FontWeight.w900,
                               letterSpacing: 0,
@@ -512,10 +538,8 @@ class _MessageTile extends StatelessWidget {
                           message.stamp,
                           style: TextStyle(
                             color: isUser
-                                ? const Color(
-                                    0xFF151515,
-                                  ).withValues(alpha: 0.58)
-                                : Colors.white.withValues(alpha: 0.48),
+                                ? const Color(0xFF151515).withOpacity(0.58)
+                                : Colors.white.withOpacity(0.48),
                             fontSize: 10,
                             fontWeight: FontWeight.w800,
                             letterSpacing: 0,
@@ -550,8 +574,13 @@ class _MessageTile extends StatelessWidget {
 class _Composer extends StatelessWidget {
   final TextEditingController controller;
   final VoidCallback onSend;
+  final bool enabled;
 
-  const _Composer({required this.controller, required this.onSend});
+  const _Composer({
+    required this.controller,
+    required this.onSend,
+    required this.enabled,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -572,7 +601,8 @@ class _Composer extends StatelessWidget {
               ),
               child: TextField(
                 controller: controller,
-                onSubmitted: (_) => onSend(),
+                enabled: enabled,
+                onSubmitted: enabled ? (_) => onSend() : null,
                 cursorColor: Colors.white,
                 style: const TextStyle(
                   color: Colors.white,
@@ -583,7 +613,7 @@ class _Composer extends StatelessWidget {
                 decoration: InputDecoration(
                   hintText: 'TRANSMIT SIGNAL',
                   hintStyle: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.42),
+                    color: Colors.white.withOpacity(0.42),
                     fontSize: 13,
                     fontWeight: FontWeight.w800,
                     letterSpacing: 0,
@@ -600,7 +630,10 @@ class _Composer extends StatelessWidget {
           const SizedBox(width: 10),
           Tooltip(
             message: 'Send',
-            child: _IconDisc(icon: Icons.north_east, onPressed: onSend),
+            child: _IconDisc(
+              icon: Icons.north_east,
+              onPressed: enabled ? onSend : null,
+            ),
           ),
         ],
       ),
@@ -610,9 +643,14 @@ class _Composer extends StatelessWidget {
 
 class _IconDisc extends StatelessWidget {
   final IconData icon;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
+  final bool light;
 
-  const _IconDisc({required this.icon, required this.onPressed});
+  const _IconDisc({
+    required this.icon,
+    required this.onPressed,
+    this.light = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -622,8 +660,10 @@ class _IconDisc extends StatelessWidget {
       child: IconButton(
         onPressed: onPressed,
         style: IconButton.styleFrom(
-          backgroundColor: const Color(0xFF111111),
-          foregroundColor: Colors.white,
+          backgroundColor: light
+              ? const Color(0xFFD8D7D3)
+              : const Color(0xFF111111),
+          foregroundColor: light ? const Color(0xFF111111) : Colors.white,
           shape: const CircleBorder(side: BorderSide(color: Color(0xFF696969))),
         ),
         icon: Icon(icon, size: 19),

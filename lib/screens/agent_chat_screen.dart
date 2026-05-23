@@ -1,11 +1,10 @@
 // lib/screens/agent_chat_screen.dart
-//
-// A plug-in chat screen that connects to the agent harness.
-// Add this to your Navigator routes or push it from anywhere.
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../agent/agent_provider.dart';
+import '../chatui.dart';
 
 class AgentChatScreen extends StatefulWidget {
   const AgentChatScreen({super.key});
@@ -18,6 +17,7 @@ class _AgentChatScreenState extends State<AgentChatScreen>
     with WidgetsBindingObserver {
   final _controller = TextEditingController();
   final _scrollController = ScrollController();
+  int _lastMessageCount = 0;
 
   @override
   void initState() {
@@ -33,7 +33,6 @@ class _AgentChatScreenState extends State<AgentChatScreen>
     super.dispose();
   }
 
-  // Flush memory when app goes to background
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused) {
@@ -46,161 +45,136 @@ class _AgentChatScreenState extends State<AgentChatScreen>
     if (text.isEmpty) return;
     _controller.clear();
     context.read<AgentProvider>().sendMessage(text);
-    Future.delayed(const Duration(milliseconds: 100), _scrollToBottom);
   }
 
   void _scrollToBottom() {
-    if (_scrollController.hasClients) {
-      _scrollController.animateTo(
-        _scrollController.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeOut,
+    if (!_scrollController.hasClients) return;
+    _scrollController.animateTo(
+      _scrollController.position.maxScrollExtent,
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  List<WranglChatMessage> _mapMessages(List<ChatMessage> messages) {
+    return messages.map(_toWranglMessage).toList();
+  }
+
+  WranglChatMessage _toWranglMessage(ChatMessage message) {
+    final time = message.timestamp;
+    final stamp =
+        '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+    if (message.isUser) {
+      return WranglChatMessage(
+        sender: 'YOU',
+        stamp: stamp,
+        body: message.text,
+        fromUser: true,
       );
     }
+    final sender = message.skillUsed != null
+        ? 'WRANGL · ${message.skillUsed!.toUpperCase()}'
+        : 'WRANGL';
+    return WranglChatMessage(sender: sender, stamp: stamp, body: message.text);
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Agent'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.psychology_outlined),
-            tooltip: 'Second Brain',
-            onPressed: () => _showBrainSheet(context),
-          ),
-          IconButton(
-            icon: const Icon(Icons.memory),
-            tooltip: 'Flush memory',
-            onPressed: () async {
-              final digest = await context.read<AgentProvider>().flushMemory();
-              if (!mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    digest != null ? 'Memory updated' : 'Nothing new to distil',
-                  ),
-                ),
-              );
-            },
-          ),
-        ],
-      ),
-      body: Consumer<AgentProvider>(
-        builder: (context, provider, _) {
-          if (provider.status == AgentStatus.initialising) {
-            return const Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text('Starting agent sidecar…'),
-                ],
-              ),
-            );
-          }
-
-          if (provider.status == AgentStatus.error &&
-              provider.messages.isEmpty) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.error_outline,
-                      size: 48,
-                      color: Colors.red,
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      provider.errorMessage ?? 'Unknown error',
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 16),
-                    ElevatedButton(
-                      onPressed: () => provider.init(),
-                      child: const Text('Retry'),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }
-
-          return Column(
-            children: [
-              Expanded(
-                child: ListView.builder(
-                  controller: _scrollController,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
-                  itemCount: provider.messages.length,
-                  itemBuilder: (_, i) => _MessageBubble(provider.messages[i]),
-                ),
-              ),
-              if (provider.status == AgentStatus.loading)
-                const LinearProgressIndicator(minHeight: 2),
-              _InputBar(
-                controller: _controller,
-                enabled: provider.status == AgentStatus.ready,
-                onSend: _send,
-              ),
-            ],
+    return Consumer<AgentProvider>(
+      builder: (context, provider, _) {
+        if (provider.messages.length != _lastMessageCount) {
+          _lastMessageCount = provider.messages.length;
+          WidgetsBinding.instance.addPostFrameCallback(
+            (_) => _scrollToBottom(),
           );
-        },
-      ),
+        }
+
+        Widget? overlay;
+        if (provider.status == AgentStatus.initialising) {
+          overlay = const _StatusOverlay(
+            icon: Icons.settings_suggest,
+            label: 'STARTING AGENT SIDECAR',
+          );
+        } else if (provider.status == AgentStatus.error &&
+            provider.messages.isEmpty) {
+          overlay = _StatusOverlay(
+            icon: Icons.error_outline,
+            label: provider.errorMessage ?? 'UNKNOWN ERROR',
+            actionLabel: 'RETRY',
+            onAction: () => provider.init(),
+          );
+        }
+
+        return WranglChatScaffold(
+          messages: _mapMessages(provider.messages),
+          controller: _controller,
+          scrollController: _scrollController,
+          onSend: _send,
+          inputEnabled: provider.status == AgentStatus.ready,
+          isLoading: provider.status == AgentStatus.loading,
+          overlay: overlay,
+          onBrain: () => _showBrainSheet(context),
+          onFlush: () async {
+            final digest = await provider.flushMemory();
+            if (!context.mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  digest != null ? 'Memory updated' : 'Nothing new to distil',
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
   void _showBrainSheet(BuildContext context) {
     showModalBottomSheet(
       context: context,
+      backgroundColor: const Color(0xFF101010),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (_) => Consumer<AgentProvider>(
         builder: (_, provider, __) {
           final brain = provider.brainSnapshot;
-          if (brain == null) {
-            return const Center(
-              child: Padding(
-                padding: EdgeInsets.all(32),
-                child: Text('No Second Brain data yet.'),
-              ),
-            );
-          }
           return Padding(
             padding: const EdgeInsets.all(20),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Second Brain',
-                  style: Theme.of(context).textTheme.titleLarge,
+                const Text(
+                  'SECOND BRAIN',
+                  style: TextStyle(
+                    color: Color(0xFFE8E7E3),
+                    fontSize: 18,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0,
+                  ),
                 ),
                 const SizedBox(height: 8),
                 Text(
                   '${brain.totalInsights} insights across ${brain.topics.length} topics',
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.72),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
-                const Divider(),
+                const Divider(color: Color(0xFF4B4B4B)),
                 Expanded(
-                  child: ListView(
-                    children: [
-                      if (brain.summary.isNotEmpty)
-                        Text(
-                          brain.summary,
-                          style: const TextStyle(
-                            fontFamily: 'monospace',
-                            fontSize: 12,
-                          ),
-                        ),
-                    ],
+                  child: SingleChildScrollView(
+                    child: Text(
+                      brain.summary,
+                      style: const TextStyle(
+                        color: Color(0xFFEAEAEA),
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                        height: 1.35,
+                      ),
+                    ),
                   ),
                 ),
               ],
@@ -212,106 +186,57 @@ class _AgentChatScreenState extends State<AgentChatScreen>
   }
 }
 
-// ── Private widgets ───────────────────────────────────────────────────
+class _StatusOverlay extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String? actionLabel;
+  final VoidCallback? onAction;
 
-class _MessageBubble extends StatelessWidget {
-  final ChatMessage message;
-  const _MessageBubble(this.message);
-
-  @override
-  Widget build(BuildContext context) {
-    final isUser = message.isUser;
-    final theme = Theme.of(context);
-
-    return Align(
-      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 4),
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.78,
-        ),
-        decoration: BoxDecoration(
-          color: isUser
-              ? theme.colorScheme.primary
-              : theme.colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (!isUser && message.skillUsed != null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Text(
-                  '🔧 ${message.skillUsed}',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-            Text(
-              message.text,
-              style: TextStyle(
-                color: isUser
-                    ? theme.colorScheme.onPrimary
-                    : theme.colorScheme.onSurface,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _InputBar extends StatelessWidget {
-  final TextEditingController controller;
-  final bool enabled;
-  final VoidCallback onSend;
-
-  const _InputBar({
-    required this.controller,
-    required this.enabled,
-    required this.onSend,
+  const _StatusOverlay({
+    required this.icon,
+    required this.label,
+    this.actionLabel,
+    this.onAction,
   });
 
   @override
   Widget build(BuildContext context) {
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
-        child: Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: controller,
-                enabled: enabled,
-                onSubmitted: (_) => onSend(),
-                decoration: InputDecoration(
-                  hintText: 'Ask anything, or give a task…',
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(24),
+    return ColoredBox(
+      color: Colors.black.withOpacity(0.72),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 320),
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 40, color: const Color(0xFFE8E7E3)),
+                const SizedBox(height: 16),
+                Text(
+                  label,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Color(0xFFE8E7E3),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0,
                   ),
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 10,
-                  ),
-                  isDense: true,
                 ),
-                maxLines: null,
-                textInputAction: TextInputAction.send,
-              ),
+                if (actionLabel != null && onAction != null) ...[
+                  const SizedBox(height: 20),
+                  FilledButton(
+                    onPressed: onAction,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFFE8E7E3),
+                      foregroundColor: const Color(0xFF111111),
+                    ),
+                    child: Text(actionLabel!),
+                  ),
+                ],
+              ],
             ),
-            const SizedBox(width: 8),
-            FilledButton.icon(
-              onPressed: enabled ? onSend : null,
-              icon: const Icon(Icons.send, size: 18),
-              label: const Text('Send'),
-              style: FilledButton.styleFrom(shape: const StadiumBorder()),
-            ),
-          ],
+          ),
         ),
       ),
     );

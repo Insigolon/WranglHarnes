@@ -1,17 +1,18 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:provider/provider.dart';
 import 'agent/agent_provider.dart';
 import 'screens/agent_chat_screen.dart';
 import 'screens/model_download_screen.dart';
-import 'chatui.dart';
 
-
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await FlutterGemma.initialize();
   runApp(
     ChangeNotifierProvider(
-      create: (_) => AgentProvider(), // Init is called later in ModelDownloadScreen
+      create: (_) => AgentProvider(),
       child: const MyApp(),
     ),
   );
@@ -286,7 +287,7 @@ class _Hub extends StatelessWidget {
       color: const Color(0xFF5C5C5C),
       boxShadow: [
         BoxShadow(
-          color: Colors.black.withValues(alpha: 0.5),
+          color: Colors.black.withOpacity(0.5),
           blurRadius: 20 * _kLauncherScale,
           spreadRadius: 4 * _kLauncherScale,
         ),
@@ -317,22 +318,22 @@ class _Painter extends CustomPainter {
     ..strokeWidth = 4.5 * _kLauncherScale
     ..strokeCap = StrokeCap.round;
   static final Paint _previewShadowPaint = Paint()
-    ..color = Colors.black.withValues(alpha: 0.35)
+    ..color = Colors.black.withOpacity(0.35)
     ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8 * _kLauncherScale);
   static final Paint _previewFillPaint = Paint()
     ..color = const Color(0xFFD9D9D9);
   static final Paint _bgShadowPaint = Paint()
-    ..color = Colors.black.withValues(alpha: 0.4)
+    ..color = Colors.black.withOpacity(0.4)
     ..maskFilter = const MaskFilter.blur(
       BlurStyle.normal,
       10 * _kLauncherScale,
     );
   static final Paint _bgFillPaint = Paint()..color = const Color(0xFFD9D9D9);
   static final Paint _selectionGlowPaint = Paint()
-    ..color = const Color(0xFFFF5C35).withValues(alpha: 0.25)
+    ..color = const Color(0xFFFF5C35).withOpacity(0.25)
     ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8 * _kLauncherScale);
   static final Paint _selectionFillPaint = Paint()
-    ..color = const Color(0xFFFF5C35).withValues(alpha: 0.6);
+    ..color = const Color(0xFFFF5C35).withOpacity(0.6);
   static final Path _previewTabPath = _buildPreviewTabPath();
 
   final Offset anchor;

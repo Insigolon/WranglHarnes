@@ -20,17 +20,18 @@ android {
     }
 
     defaultConfig {
-        // Request a larger Java heap so native libraries can allocate
-        // enough memory for ~512 MiB models (prevents SIGSEGV on initContext).
-
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.example.wranglv0"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        ndk {
+            // Restrict to ARM64 — fllama's x86_64 native library crashes on
+            // loadModelDetails when initLlamaContext returns 0 (OOM / emulator).
+            // The 5 GB model requires a real ARM64 device with ≥8 GB RAM.
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     buildTypes {
