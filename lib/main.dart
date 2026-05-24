@@ -184,8 +184,10 @@ class _RadialLauncherState extends State<RadialLauncher>
       return;
     }
     // Fast swipe = page by a full slide.
-    _nudge(vx > 0 ? _kVisibleAppCount : -_kVisibleAppCount,
-        clearSelection: true);
+    _nudge(
+      vx > 0 ? _kVisibleAppCount : -_kVisibleAppCount,
+      clearSelection: true,
+    );
   }
 
   void _nudge(int d, {bool clearSelection = false}) {
@@ -359,19 +361,19 @@ class _Painter extends CustomPainter {
     ..strokeCap = StrokeCap.round;
   static final Paint _previewShadowPaint = Paint()
     ..color = Colors.black.withValues(alpha: 0.35)
-    ..maskFilter =
-        const MaskFilter.blur(BlurStyle.normal, 8 * _kLauncherScale);
+    ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8 * _kLauncherScale);
   static final Paint _previewFillPaint = Paint()
     ..color = const Color(0xFFD9D9D9);
   static final Paint _bgShadowPaint = Paint()
     ..color = Colors.black.withValues(alpha: 0.4)
-    ..maskFilter =
-        const MaskFilter.blur(BlurStyle.normal, 10 * _kLauncherScale);
+    ..maskFilter = const MaskFilter.blur(
+      BlurStyle.normal,
+      10 * _kLauncherScale,
+    );
   static final Paint _bgFillPaint = Paint()..color = const Color(0xFFD9D9D9);
   static final Paint _selectionGlowPaint = Paint()
     ..color = const Color(0xFFFF5C35).withValues(alpha: 0.25)
-    ..maskFilter =
-        const MaskFilter.blur(BlurStyle.normal, 8 * _kLauncherScale);
+    ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8 * _kLauncherScale);
   static final Paint _selectionFillPaint = Paint()
     ..color = const Color(0xFFFF5C35).withValues(alpha: 0.6);
   static final Path _previewTabPath = _buildPreviewTabPath();

@@ -28,25 +28,18 @@ class GemmaModelClient {
     final chat = await _model!.createChat();
 
     // Prepend the system prompt to the first user message, then replay history.
+    // The final message is always treated as a user turn.
     bool systemInjected = false;
-    for (int i = 0; i < messages.length - 1; i++) {
+    for (int i = 0; i < messages.length; i++) {
       final m = messages[i];
-      final isUser = m['role'] == 'user';
-      String text = m['content']?.toString() ?? '';
+      final isUser = i == messages.length - 1 || m['role'] == 'user';
+      var text = m['content']?.toString() ?? '';
       if (isUser && !systemInjected) {
         text = '$system\n\n$text';
         systemInjected = true;
       }
       await chat.addQueryChunk(Message(text: text, isUser: isUser));
     }
-
-    // Final user turn.
-    final last = messages.last;
-    String lastText = last['content']?.toString() ?? '';
-    if (!systemInjected) {
-      lastText = '$system\n\n$lastText';
-    }
-    await chat.addQueryChunk(Message(text: lastText, isUser: true));
 
     final response = await chat.generateChatResponse();
     if (response is TextResponse) return response.token;

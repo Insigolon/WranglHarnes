@@ -117,11 +117,6 @@ class AgentProvider extends ChangeNotifier {
     return 'Memory flushed (local log updated).';
   }
 
-  void clearMessages() {
-    _messages.clear();
-    notifyListeners();
-  }
-
   @override
   void dispose() {
     _client?.dispose();
