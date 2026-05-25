@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:wrangl_native/wrangl_native.dart';
 import 'agent/model_config.dart';
@@ -29,6 +30,10 @@ void main() async {
   await RustLib.init();
   debugPrint('[rust] ${greet(name: "Wrangl")}');
 
+  // flutter_gemma 0.12.x requires explicit init per isolate before
+  // installModel / getActiveModel. The overlay isolate does its own.
+  await FlutterGemma.initialize();
+
   // The model file is loaded inside the overlay isolate, not here — the main
   // isolate only needs to know whether it has already been downloaded.
   final path = await ModelConfig.path();
@@ -46,6 +51,9 @@ void overlayMain() async {
   WidgetsFlutterBinding.ensureInitialized();
   // The overlay isolate uses the Rust harness too, so init the bridge here.
   await RustLib.init();
+  // Same plugin init as the main isolate — each Flutter isolate has its own
+  // plugin state, and the overlay is the one that actually loads the model.
+  await FlutterGemma.initialize();
   runApp(const WranglBubbleRoot());
 }
 
@@ -111,8 +119,8 @@ class _RadialLauncherState extends State<RadialLauncher>
   int? _selSlot;
   int _offset = 0;
   List<AppEntry> _apps = const [];
-  bool _screenReady = false; // MediaProjection consent granted + service live
   bool _overlayPermAsked = false; // ask the system overlay perm at most once per session
+  bool _screenConsentAsked = false; // ask the MediaProjection consent at most once per session
   final Stopwatch _pageStopwatch = Stopwatch()..start();
 
   late final AnimationController _ctrl = AnimationController(
@@ -130,7 +138,7 @@ class _RadialLauncherState extends State<RadialLauncher>
     WidgetsBinding.instance.addObserver(this);
     _loadApps();
     _ensureBubble(requestIfNeeded: true);
-    _refreshScreenReady();
+    _ensureScreenConsent();
   }
 
   @override
@@ -141,25 +149,20 @@ class _RadialLauncherState extends State<RadialLauncher>
     // loop that locks the user on the "Display over other apps" screen.
     if (state == AppLifecycleState.resumed) {
       _ensureBubble();
-      _refreshScreenReady();
     }
   }
 
-  // ── screen access (MediaProjection, consent timing A) ──────────────────────
+  // ── screen access (MediaProjection) ────────────────────────────────────────
 
-  Future<void> _refreshScreenReady() async {
-    final ready = await WranglNative.isScreenReady();
-    if (mounted) setState(() => _screenReady = ready);
-  }
-
-  Future<void> _toggleScreenAccess() async {
-    HapticFeedback.lightImpact();
-    if (_screenReady) {
-      await WranglNative.stopScreen();
-    } else {
-      await WranglNative.requestScreenConsent();
-    }
-    await _refreshScreenReady();
+  /// Auto-grant: request the per-session MediaProjection consent at most once
+  /// per app launch. There is no in-app toggle anymore — the model runs
+  /// locally, so capture should Just Work. The user can re-trigger via the
+  /// hub long-press if they denied the system dialog.
+  Future<void> _ensureScreenConsent() async {
+    if (_screenConsentAsked) return;
+    if (await WranglNative.isScreenReady()) return;
+    _screenConsentAsked = true;
+    await WranglNative.requestScreenConsent();
   }
 
   Future<void> _loadApps() async {
@@ -353,27 +356,18 @@ class _RadialLauncherState extends State<RadialLauncher>
                         top: anchor.dy - _kHubR,
                         child: GestureDetector(
                           onDoubleTap: _toggle,
-                          // The floating system bubble is the chat entry point
-                          // now; long-press re-arms it (and may re-ask the
-                          // overlay permission if the user denied it earlier).
+                          // Manual re-trigger for both system permissions in
+                          // case the user denied the dialog the first time.
                           onLongPress: () {
                             _overlayPermAsked = false;
+                            _screenConsentAsked = false;
                             _ensureBubble(requestIfNeeded: true);
+                            _ensureScreenConsent();
                           },
                           child: const _Hub(key: ValueKey('launcher-hub')),
                         ),
                       ),
                     ],
-                  ),
-                ),
-
-                // ── screen-access opt-in (lets the bubble see other apps) ──
-                Positioned(
-                  top: MediaQuery.of(context).padding.top + 12,
-                  left: 16,
-                  child: _ScreenAccessChip(
-                    enabled: _screenReady,
-                    onTap: _toggleScreenAccess,
                   ),
                 ),
               ],
@@ -405,50 +399,6 @@ class _Hub extends StatelessWidget {
       ],
     ),
   );
-}
-
-// ─── Screen-access chip ───────────────────────────────────────────────────────
-
-class _ScreenAccessChip extends StatelessWidget {
-  final bool enabled;
-  final VoidCallback onTap;
-  const _ScreenAccessChip({required this.enabled, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    final accent = enabled ? const Color(0xFFFF2200) : const Color(0xFF666666);
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.55),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: accent.withValues(alpha: 0.6)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 7,
-              height: 7,
-              decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              enabled ? 'SCREEN ACCESS ON' : 'ENABLE SCREEN ACCESS',
-              style: const TextStyle(
-                color: Color(0xFFF0EFEB),
-                fontSize: 9,
-                fontWeight: FontWeight.w900,
-                letterSpacing: 1.2,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 }
 
 // ─── Painter (unchanged) ─────────────────────────────────────────────────────

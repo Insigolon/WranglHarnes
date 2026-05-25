@@ -26,7 +26,6 @@ const double kBubbleDiameter = 60;
 const _kRed = Color(0xFFFF2200);
 const _kWhite = Color(0xFFF0EFEB);
 final _kBubbleBlack = Colors.black.withOpacity(0.80); // chat bubbles, per spec
-final _kScrim = Colors.black.withOpacity(0.45); // dims the app behind the chat
 final _kComposer = Colors.black.withOpacity(0.80);
 
 // ─── Overlay-side chat message ────────────────────────────────────────────────
@@ -259,76 +258,27 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
     );
   }
 
-  // Expanded: scrim + chat bubbles + composer, drawn over the current app.
+  // Expanded: chat bubbles + composer floating over the current app — no
+  // scrim, no header, no close button. Tap anywhere outside the bubbles or
+  // the composer to collapse back to the floating circle.
   Widget _buildChat(BuildContext context) {
     final insets = MediaQuery.of(context).viewInsets.bottom;
     final topPad = MediaQuery.of(context).padding.top;
     return Stack(
       children: [
-        // Tap the dimmed background to dismiss back to the bubble.
+        // Invisible tap-outside-to-dismiss target. HitTestBehavior.opaque is
+        // required so the GestureDetector receives taps despite having no
+        // painted background.
         Positioned.fill(
           child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
             onTap: _collapse,
-            child: Container(color: _kScrim),
-          ),
-        ),
-
-        // Header: wordmark + close.
-        Positioned(
-          top: topPad + 8,
-          left: 16,
-          right: 16,
-          child: Row(
-            children: [
-              const Text(
-                'WRANGL',
-                style: TextStyle(
-                  color: _kWhite,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: -0.5,
-                ),
-              ),
-              const SizedBox(width: 8),
-              if (_agent.loading || _agent.booting)
-                const SizedBox(
-                  width: 10,
-                  height: 10,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: _kRed,
-                  ),
-                )
-              else
-                Container(
-                  width: 6,
-                  height: 6,
-                  decoration: const BoxDecoration(
-                    color: _kRed,
-                    shape: BoxShape.circle,
-                  ),
-                ),
-              const Spacer(),
-              GestureDetector(
-                onTap: _collapse,
-                child: Container(
-                  width: 30,
-                  height: 30,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: _kBubbleBlack,
-                    border: Border.all(color: _kWhite.withOpacity(0.3)),
-                  ),
-                  child: const Icon(Icons.close, color: _kWhite, size: 14),
-                ),
-              ),
-            ],
           ),
         ),
 
         // Messages.
         Positioned.fill(
-          top: topPad + 50,
+          top: topPad + 12,
           bottom: 78 + insets,
           child: _agent.error != null && _agent.messages.isEmpty
               ? _StatusCard(label: _agent.error!, isError: true)

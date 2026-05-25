@@ -36,8 +36,8 @@ final Map<String, ToolSpec> kToolRegistry = {
     run: (_) async {
       if (!await WranglNative.isScreenReady()) {
         return ToolResult.text(
-          'ERROR: screen access is off. Tell the user to enable '
-          '"Screen access" in the Wrangl launcher.',
+          'ERROR: screen capture is not available right now. '
+          'Open Wrangl and accept the screen-capture prompt, then try again.',
         );
       }
       final bytes = await WranglNative.captureScreen();
