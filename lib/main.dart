@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:provider/provider.dart';
 import 'agent/agent_provider.dart';
-import 'screens/agent_chat_screen.dart';
+import 'screens/agent_chat_screen.dart'; // AgentChatOverlay
 import 'screens/model_download_screen.dart';
 
 class _AppLauncher {
@@ -25,22 +25,30 @@ class _AppLauncher {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await FlutterGemma.initialize();
+
+  // Check once at startup whether the model is already on-device.
+  // FlutterGemma exposes a synchronous getter after initialize().
+  final bool modelReady = FlutterGemma.hasActiveModel();
+
   runApp(
     ChangeNotifierProvider(
       create: (_) => AgentProvider(),
-      child: const MyApp(),
+      child: MyApp(modelReady: modelReady),
     ),
   );
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  final bool modelReady;
+  const MyApp({super.key, required this.modelReady});
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
+    return MaterialApp(
       debugShowCheckedModeBanner: false,
-      home: ModelDownloadScreen(),
+      // If the model is already downloaded go straight to the launcher;
+      // otherwise show the download screen exactly once.
+      home: modelReady ? const RadialLauncher() : const ModelDownloadScreen(),
     );
   }
 }
@@ -50,8 +58,9 @@ class AppEntry {
   const AppEntry(this.packageName, this.label);
 }
 
-const double _kArcStart = 205.0;
-const double _kArcEnd = 335.0;
+// ─── Launcher constants ──────────────────────────────────────────────────────
+const double _kArcStart = 160.0;
+const double _kArcEnd = 290.0;
 const double _kLauncherScale = 1.28;
 const double _kLabelScale = 1.55;
 const double _kHubR = 46.0 * _kLauncherScale;
@@ -75,6 +84,8 @@ const double _kOuterR2 = _kOuterR * _kOuterR;
 
 final double _kArcRightReach = _kOuterR * math.cos(_kArcEndRad);
 
+// ─── Radial launcher ────────────────────────────────────────────────────────
+
 class RadialLauncher extends StatefulWidget {
   const RadialLauncher({super.key});
 
@@ -84,11 +95,15 @@ class RadialLauncher extends StatefulWidget {
 
 class _RadialLauncherState extends State<RadialLauncher>
     with TickerProviderStateMixin {
+  // launcher state
   bool _open = false;
   int? _selSlot;
   int _offset = 0;
   List<AppEntry> _apps = const [];
   final Stopwatch _pageStopwatch = Stopwatch()..start();
+
+  // overlay state — only a single bool; AgentChatOverlay owns everything else
+  bool _chatOpen = false;
 
   late final AnimationController _ctrl = AnimationController(
     vsync: this,
@@ -110,6 +125,24 @@ class _RadialLauncherState extends State<RadialLauncher>
     if (mounted) setState(() => _apps = entries);
   }
 
+  // ── overlay ──────────────────────────────────────────────────────────────
+
+  void _openChat() {
+    HapticFeedback.mediumImpact();
+    if (_open) {
+      setState(() {
+        _open = false;
+        _selSlot = null;
+      });
+      _ctrl.reverse();
+    }
+    setState(() => _chatOpen = true);
+  }
+
+  void _closeChat() => setState(() => _chatOpen = false);
+
+  // ── launcher gestures ─────────────────────────────────────────────────────
+
   void _launchSelected() {
     if (_selSlot == null || _apps.isEmpty) return;
     final idx =
@@ -121,40 +154,6 @@ class _RadialLauncherState extends State<RadialLauncher>
       _selSlot = null;
     });
     _ctrl.reverse();
-  }
-
-  Route<void> _chatRoute() {
-    return PageRouteBuilder(
-      transitionDuration: const Duration(milliseconds: 420),
-      reverseTransitionDuration: const Duration(milliseconds: 280),
-      pageBuilder: (_, _, _) => const AgentChatScreen(),
-      transitionsBuilder: (_, animation, _, child) {
-        final curved = CurvedAnimation(
-          parent: animation,
-          curve: Curves.easeOutCubic,
-          reverseCurve: Curves.easeInCubic,
-        );
-        return FadeTransition(
-          opacity: curved,
-          child: ScaleTransition(
-            scale: Tween<double>(begin: 0.96, end: 1).animate(curved),
-            child: child,
-          ),
-        );
-      },
-    );
-  }
-
-  void _openChat() {
-    HapticFeedback.mediumImpact();
-    if (_open) {
-      setState(() {
-        _open = false;
-        _selSlot = null;
-      });
-      _ctrl.reverse();
-    }
-    Navigator.of(context).push(_chatRoute());
   }
 
   void _toggle() {
@@ -179,11 +178,9 @@ class _RadialLauncherState extends State<RadialLauncher>
     if (!_open) return;
     final vx = d.velocity.pixelsPerSecond.dx;
     if (vx.abs() < 650) {
-      // Slow release on a slot = launch it.
       if (_selSlot != null) _launchSelected();
       return;
     }
-    // Fast swipe = page by a full slide.
     _nudge(
       vx > 0 ? _kVisibleAppCount : -_kVisibleAppCount,
       clearSelection: true,
@@ -221,7 +218,6 @@ class _RadialLauncherState extends State<RadialLauncher>
       if (_selSlot != null) setState(() => _selSlot = null);
       return;
     }
-
     if (ang < _kMenuStartRad) {
       allowPaging ? _pageByDrag(-1) : _nudge(-1, clearSelection: true);
       return;
@@ -230,7 +226,6 @@ class _RadialLauncherState extends State<RadialLauncher>
       allowPaging ? _pageByDrag(1) : _nudge(1, clearSelection: true);
       return;
     }
-
     final total = _apps.length;
     final visible = math.min(_kVisibleAppCount, total);
     if (visible == 0) return;
@@ -245,15 +240,13 @@ class _RadialLauncherState extends State<RadialLauncher>
     _updateHover(d.localPosition, anchor, allowPaging: false);
   }
 
-  Offset _computeAnchor(BoxConstraints c) {
-    return Offset(
-      math.max(
-        _kOuterR + _kCornerInset,
-        c.maxWidth - _kArcRightReach - _kCornerInset,
-      ),
-      c.maxHeight - _kHubR - _kCornerInset,
-    );
-  }
+  Offset _computeAnchor(BoxConstraints c) => Offset(
+    math.max(
+      _kOuterR + _kCornerInset,
+      c.maxWidth - _kArcRightReach - _kCornerInset,
+    ),
+    c.maxHeight - _kHubR - _kCornerInset,
+  );
 
   @override
   void dispose() {
@@ -264,51 +257,66 @@ class _RadialLauncherState extends State<RadialLauncher>
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: false,
+      canPop: !_chatOpen,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _chatOpen) _closeChat();
+      },
       child: Scaffold(
         backgroundColor: const Color(0xFF0D0D0D),
+        resizeToAvoidBottomInset: false,
         body: LayoutBuilder(
           builder: (_, c) {
             final anchor = _computeAnchor(c);
-            return GestureDetector(
-              onDoubleTap: _toggle,
-              onPanStart: (d) => _panStart(d, anchor),
-              onPanUpdate: (d) => _pan(d, anchor),
-              onPanEnd: _panEnd,
-              onTapDown: (d) => _tap(d, anchor),
-              onTap: () {
-                if (_open && _selSlot != null) _launchSelected();
-              },
-              child: Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  Positioned.fill(
-                    child: FadeTransition(
-                      opacity: _anim,
-                      child: RepaintBoundary(
-                        child: CustomPaint(
-                          painter: _Painter(
-                            anchor: anchor,
-                            apps: _apps,
-                            offset: _offset,
-                            selectedSlot: _selSlot,
+            return Stack(
+              clipBehavior: Clip.none,
+              children: [
+                // ── radial launcher ──────────────────────────────────
+                GestureDetector(
+                  onDoubleTap: _toggle,
+                  onPanStart: (d) => _panStart(d, anchor),
+                  onPanUpdate: (d) => _pan(d, anchor),
+                  onPanEnd: _panEnd,
+                  onTapDown: (d) => _tap(d, anchor),
+                  onTap: () {
+                    if (_open && _selSlot != null) _launchSelected();
+                  },
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Positioned.fill(
+                        child: FadeTransition(
+                          opacity: _anim,
+                          child: RepaintBoundary(
+                            child: CustomPaint(
+                              painter: _Painter(
+                                anchor: anchor,
+                                apps: _apps,
+                                offset: _offset,
+                                selectedSlot: _selSlot,
+                              ),
+                              child: const SizedBox.expand(),
+                            ),
                           ),
-                          child: const SizedBox.expand(),
                         ),
                       ),
-                    ),
+                      Positioned(
+                        left: anchor.dx - _kHubR,
+                        top: anchor.dy - _kHubR,
+                        child: GestureDetector(
+                          onDoubleTap: _toggle,
+                          onLongPress: _openChat,
+                          child: const _Hub(key: ValueKey('launcher-hub')),
+                        ),
+                      ),
+                    ],
                   ),
-                  Positioned(
-                    left: anchor.dx - _kHubR,
-                    top: anchor.dy - _kHubR,
-                    child: GestureDetector(
-                      onDoubleTap: _toggle,
-                      onLongPress: _openChat,
-                      child: const _Hub(key: ValueKey('launcher-hub')),
-                    ),
-                  ),
-                ],
-              ),
+                ),
+
+                // ── chat overlay ─────────────────────────────────────
+                // AgentChatOverlay owns its own controllers, provider
+                // wiring, brain sheet, and lifecycle observer.
+                AgentChatOverlay(visible: _chatOpen, onClose: _closeChat),
+              ],
             );
           },
         ),
@@ -316,6 +324,8 @@ class _RadialLauncherState extends State<RadialLauncher>
     );
   }
 }
+
+// ─── Hub ────────────────────────────────────────────────────────────────────
 
 class _Hub extends StatelessWidget {
   const _Hub({super.key});
@@ -337,6 +347,8 @@ class _Hub extends StatelessWidget {
     ),
   );
 }
+
+// ─── Painter (unchanged) ─────────────────────────────────────────────────────
 
 class _LabelLayout {
   final AppEntry app;
@@ -415,12 +427,10 @@ class _Painter extends CustomPainter {
         : _createPreviewPainter(_selectedLabel.app);
   }
 
-  static Offset _pointFor(Offset anchor, double radius, double angle) {
-    return Offset(
-      anchor.dx + radius * math.cos(angle),
-      anchor.dy + radius * math.sin(angle),
-    );
-  }
+  static Offset _pointFor(Offset anchor, double radius, double angle) => Offset(
+    anchor.dx + radius * math.cos(angle),
+    anchor.dy + radius * math.sin(angle),
+  );
 
   static Path _buildPreviewTabPath() {
     final tabStart = _kOuterR - 20 * _kLauncherScale;
@@ -430,7 +440,6 @@ class _Painter extends CustomPainter {
     final flare = 22 * _kLauncherScale;
     final neckWidth = tabWidth * 0.62;
     final tabEnd = tabStart + tabLength;
-
     return Path()
       ..moveTo(tabStart, -neckWidth / 2)
       ..quadraticBezierTo(
@@ -467,106 +476,66 @@ class _Painter extends CustomPainter {
     const cornerR = 14 * _kLauncherScale;
     const outerDelta = cornerR / _kOuterR;
     const innerDelta = cornerR / _kInnerR;
-
     final path = Path();
     final outerRect = Rect.fromCircle(center: anchor, radius: _kOuterR);
     final innerRect = Rect.fromCircle(center: anchor, radius: _kInnerR);
-    final startOuterArc = _pointFor(
-      anchor,
-      _kOuterR,
-      _kArcStartRad + outerDelta,
-    );
-    final startOuter = _pointFor(anchor, _kOuterR, _kArcStartRad);
-    final startInner = _pointFor(anchor, _kInnerR, _kArcStartRad);
-    final endOuter = _pointFor(anchor, _kOuterR, _kArcEndRad);
-    final endInner = _pointFor(anchor, _kInnerR, _kArcEndRad);
-    final endOuterCorner = _pointFor(anchor, _kOuterR - cornerR, _kArcEndRad);
-    final endInnerCorner = _pointFor(anchor, _kInnerR + cornerR, _kArcEndRad);
-    final endInnerArc = _pointFor(anchor, _kInnerR, _kArcEndRad - innerDelta);
-    final startInnerCorner = _pointFor(
-      anchor,
-      _kInnerR + cornerR,
-      _kArcStartRad,
-    );
-    final startOuterCorner = _pointFor(
-      anchor,
-      _kOuterR - cornerR,
-      _kArcStartRad,
-    );
-
-    path.moveTo(startOuterArc.dx, startOuterArc.dy);
-    path.arcTo(
-      outerRect,
-      _kArcStartRad + outerDelta,
-      _kArcSpanRad - 2 * outerDelta,
-      false,
-    );
-    path.quadraticBezierTo(
-      endOuter.dx,
-      endOuter.dy,
-      endOuterCorner.dx,
-      endOuterCorner.dy,
-    );
-    path.lineTo(endInnerCorner.dx, endInnerCorner.dy);
-    path.quadraticBezierTo(
-      endInner.dx,
-      endInner.dy,
-      endInnerArc.dx,
-      endInnerArc.dy,
-    );
-    path.arcTo(
-      innerRect,
-      _kArcEndRad - innerDelta,
-      -(_kArcSpanRad - 2 * innerDelta),
-      false,
-    );
-    path.quadraticBezierTo(
-      startInner.dx,
-      startInner.dy,
-      startInnerCorner.dx,
-      startInnerCorner.dy,
-    );
-    path.lineTo(startOuterCorner.dx, startOuterCorner.dy);
-    path.quadraticBezierTo(
-      startOuter.dx,
-      startOuter.dy,
-      startOuterArc.dx,
-      startOuterArc.dy,
-    );
-    path.close();
+    final sOA = _pointFor(anchor, _kOuterR, _kArcStartRad + outerDelta);
+    final sO = _pointFor(anchor, _kOuterR, _kArcStartRad);
+    final sI = _pointFor(anchor, _kInnerR, _kArcStartRad);
+    final eO = _pointFor(anchor, _kOuterR, _kArcEndRad);
+    final eI = _pointFor(anchor, _kInnerR, _kArcEndRad);
+    final eOC = _pointFor(anchor, _kOuterR - cornerR, _kArcEndRad);
+    final eIC = _pointFor(anchor, _kInnerR + cornerR, _kArcEndRad);
+    final eIA = _pointFor(anchor, _kInnerR, _kArcEndRad - innerDelta);
+    final sIC = _pointFor(anchor, _kInnerR + cornerR, _kArcStartRad);
+    final sOC = _pointFor(anchor, _kOuterR - cornerR, _kArcStartRad);
+    path
+      ..moveTo(sOA.dx, sOA.dy)
+      ..arcTo(
+        outerRect,
+        _kArcStartRad + outerDelta,
+        _kArcSpanRad - 2 * outerDelta,
+        false,
+      )
+      ..quadraticBezierTo(eO.dx, eO.dy, eOC.dx, eOC.dy)
+      ..lineTo(eIC.dx, eIC.dy)
+      ..quadraticBezierTo(eI.dx, eI.dy, eIA.dx, eIA.dy)
+      ..arcTo(
+        innerRect,
+        _kArcEndRad - innerDelta,
+        -(_kArcSpanRad - 2 * innerDelta),
+        false,
+      )
+      ..quadraticBezierTo(sI.dx, sI.dy, sIC.dx, sIC.dy)
+      ..lineTo(sOC.dx, sOC.dy)
+      ..quadraticBezierTo(sO.dx, sO.dy, sOA.dx, sOA.dy)
+      ..close();
     return path;
   }
 
-  Offset _point(double radius, double angle) {
-    return _pointFor(anchor, radius, angle);
-  }
+  Offset _point(double radius, double angle) =>
+      _pointFor(anchor, radius, angle);
 
-  Offset _tangentPoint(double radius, double tangentOffset, double angle) {
-    return Offset(
-      anchor.dx +
-          radius * math.cos(angle) +
-          tangentOffset * math.cos(angle + math.pi / 2),
-      anchor.dy +
-          radius * math.sin(angle) +
-          tangentOffset * math.sin(angle + math.pi / 2),
-    );
-  }
+  Offset _tangentPoint(double radius, double tangentOffset, double angle) =>
+      Offset(
+        anchor.dx +
+            radius * math.cos(angle) +
+            tangentOffset * math.cos(angle + math.pi / 2),
+        anchor.dy +
+            radius * math.sin(angle) +
+            tangentOffset * math.sin(angle + math.pi / 2),
+      );
 
   double _towardTopLean(double angle) {
     const top = math.pi * 1.5;
     var delta = top - angle;
-    while (delta > math.pi) {
-      delta -= math.pi * 2;
-    }
-    while (delta < -math.pi) {
-      delta += math.pi * 2;
-    }
+    while (delta > math.pi) delta -= math.pi * 2;
+    while (delta < -math.pi) delta += math.pi * 2;
     return delta.clamp(-0.28, 0.28) * 0.45;
   }
 
   List<_LabelLayout> _buildLabels() {
     if (_visible == 0) return const [];
-
     final labels = <_LabelLayout>[];
     final midR = (_kInnerR + _kOuterR) / 2;
     for (int i = 0; i < _visible; i++) {
@@ -586,7 +555,6 @@ class _Painter extends CustomPainter {
         ),
         textDirection: TextDirection.ltr,
       )..layout(maxWidth: 72 * _kLabelScale);
-
       labels.add(
         _LabelLayout(
           app: app,
@@ -600,24 +568,22 @@ class _Painter extends CustomPainter {
     return labels;
   }
 
-  TextPainter _createPreviewPainter(AppEntry app) {
-    return TextPainter(
-      text: TextSpan(
-        text: app.label,
-        style: TextStyle(
-          fontSize: 15.5 * _kLabelScale,
-          fontWeight: FontWeight.w700,
-          color: const Color(0xFF1A1A1A),
-          letterSpacing: 0,
-        ),
+  TextPainter _createPreviewPainter(AppEntry app) => TextPainter(
+    text: TextSpan(
+      text: app.label,
+      style: TextStyle(
+        fontSize: 15.5 * _kLabelScale,
+        fontWeight: FontWeight.w700,
+        color: const Color(0xFF1A1A1A),
+        letterSpacing: 0,
       ),
-      textDirection: TextDirection.ltr,
-    )..layout(maxWidth: 84 * _kLabelScale);
-  }
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout(maxWidth: 84 * _kLabelScale);
 
   Path _buildSelectionPath(int slot) {
     final segS = _kMenuStartRad + slot * _segRad;
-    final wedge = Path()
+    return Path()
       ..moveTo(anchor.dx, anchor.dy)
       ..addArc(
         Rect.fromCircle(
@@ -628,53 +594,41 @@ class _Painter extends CustomPainter {
         _segRad,
       )
       ..lineTo(anchor.dx, anchor.dy);
-    return wedge;
   }
 
   void _drawDivider(Canvas canvas, double rad) {
-    final start = _point(_kInnerR + 8 * _kLauncherScale, rad);
-    final end = _point(_kOuterR - 14 * _kLauncherScale, rad);
-    canvas.drawLine(start, end, _dividerPaint);
+    canvas.drawLine(
+      _point(_kInnerR + 8 * _kLauncherScale, rad),
+      _point(_kOuterR - 14 * _kLauncherScale, rad),
+      _dividerPaint,
+    );
   }
 
-  void _drawPreview(
-    Canvas canvas,
-    _LabelLayout selectedLabel,
-    TextPainter previewPainter,
-  ) {
-    final previewRad =
-        selectedLabel.midRad + _towardTopLean(selectedLabel.midRad);
-
+  void _drawPreview(Canvas canvas, _LabelLayout sel, TextPainter pp) {
+    final rad = sel.midRad + _towardTopLean(sel.midRad);
     canvas.save();
     canvas.translate(anchor.dx, anchor.dy);
-    canvas.rotate(previewRad);
+    canvas.rotate(rad);
     canvas.drawPath(_previewTabPath, _previewShadowPaint);
     canvas.drawPath(_previewTabPath, _previewFillPaint);
     canvas.restore();
-
-    final textCenter = _tangentPoint(
+    final tc = _tangentPoint(
       _kOuterR + 40 * _kLauncherScale,
       2 * _kLauncherScale,
-      previewRad,
+      rad,
     );
-
     canvas.save();
-    canvas.translate(textCenter.dx, textCenter.dy);
-    canvas.rotate(previewRad + math.pi);
-    previewPainter.paint(
-      canvas,
-      Offset(-previewPainter.width / 2, -previewPainter.height / 2),
-    );
+    canvas.translate(tc.dx, tc.dy);
+    canvas.rotate(rad + math.pi);
+    pp.paint(canvas, Offset(-pp.width / 2, -pp.height / 2));
     canvas.restore();
   }
 
   @override
   void paint(Canvas canvas, Size size) {
     if (_visible == 0) return;
-
     canvas.drawPath(_bgPath, _bgShadowPaint);
     canvas.drawPath(_bgPath, _bgFillPaint);
-
     canvas.save();
     canvas.clipPath(_bgPath);
     if (_selectionPath != null) {
@@ -682,10 +636,8 @@ class _Painter extends CustomPainter {
       canvas.drawPath(_selectionPath, _selectionFillPaint);
     }
     canvas.restore();
-
     _drawDivider(canvas, _kMenuStartRad);
     _drawDivider(canvas, _kMenuEndRad);
-
     for (final label in _labels) {
       canvas.save();
       canvas.translate(label.center.dx, label.center.dy);
@@ -696,7 +648,6 @@ class _Painter extends CustomPainter {
       );
       canvas.restore();
     }
-
     if (_selectedLabel != null && _previewPainter != null) {
       _drawPreview(canvas, _selectedLabel, _previewPainter);
     }
