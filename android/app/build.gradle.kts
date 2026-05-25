@@ -39,6 +39,13 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+
+            // flutter_gemma bundles MediaPipe, which references optional protobuf
+            // classes via reflection. R8/minification fails on (and can strip)
+            // those, and APK shrinking is irrelevant next to the multi-GB model
+            // download — so keep release unminified.
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 }

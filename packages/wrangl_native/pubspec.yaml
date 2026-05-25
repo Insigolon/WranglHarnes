@@ -1,0 +1,19 @@
+name: wrangl_native
+description: Native capabilities for Wrangl — app launching and MediaProjection screen capture, exposed as a Flutter plugin so it auto-registers on every engine (including the overlay isolate).
+version: 0.0.1
+publish_to: 'none'
+
+environment:
+  sdk: ^3.5.0
+  flutter: '>=3.3.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.wrangl.wrangl_native
+        pluginClass: WranglNativePlugin

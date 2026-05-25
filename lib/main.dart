@@ -1,41 +1,52 @@
+import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_gemma/flutter_gemma.dart';
-import 'package:provider/provider.dart';
-import 'agent/agent_provider.dart';
-import 'screens/agent_chat_screen.dart'; // AgentChatOverlay
+import 'package:flutter_overlay_window/flutter_overlay_window.dart';
+import 'package:wrangl_native/wrangl_native.dart';
+import 'agent/model_config.dart';
+import 'overlay/bubble_overlay.dart';
 import 'screens/model_download_screen.dart';
+import 'src/rust/api/simple.dart';
+import 'src/rust/frb_generated.dart';
 
 class _AppLauncher {
-  static const _ch = MethodChannel('app.launcher/apps');
-
   static Future<List<AppEntry>> getInstalledApps() async {
-    final raw = await _ch.invokeListMethod<Map>('getInstalledApps') ?? [];
+    final raw = await WranglNative.getInstalledApps();
     return raw
-        .map((m) => AppEntry(m['packageName'] as String, m['label'] as String))
+        .map((m) => AppEntry(m['packageName']!, m['label']!))
         .toList();
   }
 
-  static Future<void> openApp(String packageName) async {
-    await _ch.invokeMethod<bool>('launchApp', {'packageName': packageName});
-  }
+  static Future<void> openApp(String packageName) => WranglNative.launchApp(packageName);
 }
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await FlutterGemma.initialize();
 
-  // Check once at startup whether the model is already on-device.
-  // FlutterGemma exposes a synchronous getter after initialize().
-  final bool modelReady = FlutterGemma.hasActiveModel();
+  // Bring up the Rust core (flutter_rust_bridge). This must run once per
+  // isolate that calls into Rust. Validates the FFI toolchain end-to-end.
+  await RustLib.init();
+  debugPrint('[rust] ${greet(name: "Wrangl")}');
 
-  runApp(
-    ChangeNotifierProvider(
-      create: (_) => AgentProvider(),
-      child: MyApp(modelReady: modelReady),
-    ),
-  );
+  // The model file is loaded inside the overlay isolate, not here — the main
+  // isolate only needs to know whether it has already been downloaded.
+  final path = await ModelConfig.path();
+  final file = File(path);
+  final modelReady =
+      await file.exists() && await file.length() > 100 * 1024 * 1024;
+
+  runApp(MyApp(modelReady: modelReady));
+}
+
+/// Entry point for the overlay isolate spawned by flutter_overlay_window.
+/// The native side launches the Dart function named exactly `overlayMain`.
+@pragma('vm:entry-point')
+void overlayMain() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // The overlay isolate uses the Rust harness too, so init the bridge here.
+  await RustLib.init();
+  runApp(const WranglBubbleRoot());
 }
 
 class MyApp extends StatelessWidget {
@@ -94,16 +105,14 @@ class RadialLauncher extends StatefulWidget {
 }
 
 class _RadialLauncherState extends State<RadialLauncher>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   // launcher state
   bool _open = false;
   int? _selSlot;
   int _offset = 0;
   List<AppEntry> _apps = const [];
+  bool _screenReady = false; // MediaProjection consent granted + service live
   final Stopwatch _pageStopwatch = Stopwatch()..start();
-
-  // overlay state — only a single bool; AgentChatOverlay owns everything else
-  bool _chatOpen = false;
 
   late final AnimationController _ctrl = AnimationController(
     vsync: this,
@@ -117,7 +126,36 @@ class _RadialLauncherState extends State<RadialLauncher>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadApps();
+    _ensureBubble();
+    _refreshScreenReady();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Re-attempt after the user returns from the system permission screen.
+    if (state == AppLifecycleState.resumed) {
+      _ensureBubble();
+      _refreshScreenReady();
+    }
+  }
+
+  // ── screen access (MediaProjection, consent timing A) ──────────────────────
+
+  Future<void> _refreshScreenReady() async {
+    final ready = await WranglNative.isScreenReady();
+    if (mounted) setState(() => _screenReady = ready);
+  }
+
+  Future<void> _toggleScreenAccess() async {
+    HapticFeedback.lightImpact();
+    if (_screenReady) {
+      await WranglNative.stopScreen();
+    } else {
+      await WranglNative.requestScreenConsent();
+    }
+    await _refreshScreenReady();
   }
 
   Future<void> _loadApps() async {
@@ -125,21 +163,28 @@ class _RadialLauncherState extends State<RadialLauncher>
     if (mounted) setState(() => _apps = entries);
   }
 
-  // ── overlay ──────────────────────────────────────────────────────────────
+  // ── floating system bubble ─────────────────────────────────────────────────
 
-  void _openChat() {
-    HapticFeedback.mediumImpact();
-    if (_open) {
-      setState(() {
-        _open = false;
-        _selSlot = null;
-      });
-      _ctrl.reverse();
+  /// Make sure the draw-over-other-apps bubble is running. Requests the
+  /// permission if needed (which sends the user to system settings); the
+  /// resumed lifecycle callback retries once they come back.
+  Future<void> _ensureBubble() async {
+    if (await FlutterOverlayWindow.isActive()) return;
+    if (!await FlutterOverlayWindow.isPermissionGranted()) {
+      await FlutterOverlayWindow.requestPermission();
+      return; // wait for the user to return; didChangeAppLifecycleState retries
     }
-    setState(() => _chatOpen = true);
+    await FlutterOverlayWindow.showOverlay(
+      height: kBubbleWindow.toInt(),
+      width: kBubbleWindow.toInt(),
+      alignment: OverlayAlignment.centerRight,
+      flag: OverlayFlag.defaultFlag,
+      enableDrag: true,
+      positionGravity: PositionGravity.auto,
+      overlayTitle: 'Wrangl',
+      overlayContent: 'Tap the bubble to chat',
+    );
   }
-
-  void _closeChat() => setState(() => _chatOpen = false);
 
   // ── launcher gestures ─────────────────────────────────────────────────────
 
@@ -250,18 +295,14 @@ class _RadialLauncherState extends State<RadialLauncher>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _ctrl.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return PopScope(
-      canPop: !_chatOpen,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && _chatOpen) _closeChat();
-      },
-      child: Scaffold(
+    return Scaffold(
         backgroundColor: const Color(0xFF0D0D0D),
         resizeToAvoidBottomInset: false,
         body: LayoutBuilder(
@@ -304,7 +345,9 @@ class _RadialLauncherState extends State<RadialLauncher>
                         top: anchor.dy - _kHubR,
                         child: GestureDetector(
                           onDoubleTap: _toggle,
-                          onLongPress: _openChat,
+                          // The floating system bubble is the chat entry point
+                          // now; long-press just re-arms it if it was closed.
+                          onLongPress: _ensureBubble,
                           child: const _Hub(key: ValueKey('launcher-hub')),
                         ),
                       ),
@@ -312,15 +355,19 @@ class _RadialLauncherState extends State<RadialLauncher>
                   ),
                 ),
 
-                // ── chat overlay ─────────────────────────────────────
-                // AgentChatOverlay owns its own controllers, provider
-                // wiring, brain sheet, and lifecycle observer.
-                AgentChatOverlay(visible: _chatOpen, onClose: _closeChat),
+                // ── screen-access opt-in (lets the bubble see other apps) ──
+                Positioned(
+                  top: MediaQuery.of(context).padding.top + 12,
+                  left: 16,
+                  child: _ScreenAccessChip(
+                    enabled: _screenReady,
+                    onTap: _toggleScreenAccess,
+                  ),
+                ),
               ],
             );
           },
         ),
-      ),
     );
   }
 }
@@ -346,6 +393,50 @@ class _Hub extends StatelessWidget {
       ],
     ),
   );
+}
+
+// ─── Screen-access chip ───────────────────────────────────────────────────────
+
+class _ScreenAccessChip extends StatelessWidget {
+  final bool enabled;
+  final VoidCallback onTap;
+  const _ScreenAccessChip({required this.enabled, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = enabled ? const Color(0xFFFF2200) : const Color(0xFF666666);
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.55),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: accent.withValues(alpha: 0.6)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 7,
+              height: 7,
+              decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              enabled ? 'SCREEN ACCESS ON' : 'ENABLE SCREEN ACCESS',
+              style: const TextStyle(
+                color: Color(0xFFF0EFEB),
+                fontSize: 9,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 1.2,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 // ─── Painter (unchanged) ─────────────────────────────────────────────────────

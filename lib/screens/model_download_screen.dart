@@ -2,9 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
-import 'package:provider/provider.dart';
-import '../agent/agent_provider.dart';
+import '../agent/model_config.dart';
 import '../main.dart' show RadialLauncher;
 
 class ModelDownloadScreen extends StatefulWidget {
@@ -19,10 +17,8 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
   double _progress = 0.0;
   String _statusMessage = 'Checking for Gemma 4 model...';
 
-  static const _modelFilename = 'gemma-4-E2B-it.litertlm';
-  static const _modelDisplayName = 'Gemma 4 2B (~2.6 GB)';
-  static const _modelUrl =
-      'https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm';
+  static const _modelDisplayName = ModelConfig.displayName;
+  static const _modelUrl = ModelConfig.url;
 
   @override
   void initState() {
@@ -30,10 +26,7 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
     _checkExistingModel();
   }
 
-  Future<String> _modelPath() async {
-    final dir = await getApplicationDocumentsDirectory();
-    return '${dir.path}/$_modelFilename';
-  }
+  Future<String> _modelPath() => ModelConfig.path();
 
   Future<void> _checkExistingModel() async {
     final path = await _modelPath();
@@ -91,7 +84,8 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
 
       if (total > 0 && downloaded < total) {
         throw HttpException(
-            'Incomplete download (${_fmt(downloaded)} of ${_fmt(total)})');
+          'Incomplete download (${_fmt(downloaded)} of ${_fmt(total)})',
+        );
       }
 
       final dest = File(path);
@@ -102,7 +96,9 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
     } catch (e) {
       debugPrint('[download] Error: $e');
       if (File(partialPath).existsSync()) {
-        try { await File(partialPath).delete(); } catch (_) {}
+        try {
+          await File(partialPath).delete();
+        } catch (_) {}
       }
       if (mounted) {
         setState(() => _statusMessage = 'Download failed: $e\n\nTap to retry.');
@@ -113,23 +109,12 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
   }
 
   Future<void> _startApp(String modelPath) async {
-    final provider = context.read<AgentProvider>();
-    try {
-      setState(() => _statusMessage = 'Loading model...');
-
-      // Register the downloaded file with flutter_gemma and initialise the provider
-      await provider.init(modelPath);
-
-      if (!mounted) return;
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const RadialLauncher()),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Failed to start: $e')));
-      setState(() => _statusMessage = 'Model load failed.\n$e');
-    }
+    // The model itself is loaded lazily inside the floating overlay isolate,
+    // not here — the main isolate only needs the file to exist on disk.
+    if (!mounted) return;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => const RadialLauncher()),
+    );
   }
 
   String _fmt(int bytes) {
