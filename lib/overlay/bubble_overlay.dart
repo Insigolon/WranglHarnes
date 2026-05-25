@@ -59,7 +59,7 @@ class _OverlayAgent extends ChangeNotifier {
       final path = await ModelConfig.path();
       _client = GemmaModelClient(path);
       await _client!.loadModel(withVision: true);
-      _harness = WranglHarness(_complete);
+      _harness = await WranglHarness.load(_complete);
       ready = true;
     } catch (e) {
       error = '$e';

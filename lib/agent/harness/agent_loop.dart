@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -15,9 +16,13 @@ class LoopResult {
   LoopResult(this.status, this.text);
 }
 
-/// The inner agent loop for one skill. Orchestrates the Dart model + tools, but
-/// delegates the brittle bits — output parsing and the eval gate — to the Rust
-/// core ([rust.parseOutput] / [rust.evaluate]).
+/// The inner agent loop for one skill.
+///
+/// All branching logic — parse model output, evaluate it, decide whether to
+/// call a tool, retry, finalize, or give up — lives in Rust as
+/// `decide_next`. Dart's job is just to (a) run the Gemma model, (b) execute
+/// tools (which are Flutter plugin calls and so have to be Dart), and
+/// (c) thread history through.
 class AgentLoop {
   final ModelComplete model;
   final Skill skill;
@@ -74,66 +79,59 @@ class AgentLoop {
         maxTokens: 512,
       );
       pendingImage = null;
-      final parsed = rust.parseOutput(raw: raw);
 
-      if (parsed.kind == rust.ParsedKind.toolCall) {
-        final ev = rust.evaluate(
-          outputRaw: raw,
-          validTools: validTools,
-          prevAssistantOutputs: assistantOutputs,
-        );
-        assistantOutputs.add(raw);
-        history.add({'role': 'assistant', 'content': raw});
-        if (!ev.passed) {
-          if (retries < maxRetries) {
-            retries++;
-            history.add({'role': 'user', 'content': ev.retryPrompt});
-            continue;
-          }
-          return LoopResult(
-              LoopStatus.partial, 'I could not complete that: ${ev.reason}');
-        }
-
-        var args = <String, dynamic>{};
-        final aj = parsed.argsJson;
-        if (aj != null) {
-          try {
-            final d = jsonDecode(aj);
-            if (d is Map) args = d.cast<String, dynamic>();
-          } catch (_) {}
-        }
-
-        final result = await runTool(skill.tools, parsed.tool!, args);
-        if (result.kind == ToolResultKind.image && result.image != null) {
-          history.add({
-            'role': 'tool',
-            'content': 'Screenshot captured. Use it to answer the user.'
-          });
-          pendingImage = result.image; // attaches to the next model turn
-        } else {
-          history.add({'role': 'tool', 'content': result.text});
-        }
-        continue;
-      }
-
-      // Final answer.
-      final ev = rust.evaluate(
-        outputRaw: raw,
+      final d = rust.decideNext(
+        rawModelOutput: raw,
         validTools: validTools,
         prevAssistantOutputs: assistantOutputs,
+        retriesSoFar: retries,
+        maxRetries: maxRetries,
       );
-      assistantOutputs.add(raw);
-      final content = parsed.content ?? raw;
-      if (ev.passed) return LoopResult(LoopStatus.ok, content);
-      if (retries < maxRetries) {
-        retries++;
-        history.add({'role': 'assistant', 'content': raw});
-        history.add({'role': 'user', 'content': ev.retryPrompt});
-        continue;
+      retries = d.retriesAfter;
+
+      if (d.newAssistantLog.isNotEmpty) {
+        assistantOutputs.add(d.newAssistantLog);
+        history.add({'role': 'assistant', 'content': d.newAssistantLog});
       }
-      return LoopResult(LoopStatus.partial, content);
+
+      switch (d.action) {
+        case rust.DecisionAction.emitFinal:
+          return LoopResult(LoopStatus.ok, d.finalText ?? raw);
+
+        case rust.DecisionAction.aborted:
+          return LoopResult(LoopStatus.partial, d.finalText ?? raw);
+
+        case rust.DecisionAction.retry:
+          if (d.retryFeedback != null && d.retryFeedback!.isNotEmpty) {
+            history.add({'role': 'user', 'content': d.retryFeedback});
+          }
+          continue;
+
+        case rust.DecisionAction.callTool:
+          final args = _decodeArgs(d.toolArgsJson);
+          final result = await runTool(skill.tools, d.toolName!, args);
+          if (result.kind == ToolResultKind.image && result.image != null) {
+            history.add({
+              'role': 'tool',
+              'content': 'Screenshot captured. Use it to answer the user.'
+            });
+            pendingImage = result.image;
+          } else {
+            history.add({'role': 'tool', 'content': result.text});
+          }
+          continue;
+      }
     }
     return LoopResult(
         LoopStatus.maxIterations, "I'm having trouble — try rephrasing that.");
+  }
+
+  Map<String, dynamic> _decodeArgs(String? argsJson) {
+    if (argsJson == null || argsJson.isEmpty) return const {};
+    try {
+      final d = jsonDecode(argsJson);
+      if (d is Map) return d.cast<String, dynamic>();
+    } catch (_) {}
+    return const {};
   }
 }

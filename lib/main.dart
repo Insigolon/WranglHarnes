@@ -112,6 +112,7 @@ class _RadialLauncherState extends State<RadialLauncher>
   int _offset = 0;
   List<AppEntry> _apps = const [];
   bool _screenReady = false; // MediaProjection consent granted + service live
+  bool _overlayPermAsked = false; // ask the system overlay perm at most once per session
   final Stopwatch _pageStopwatch = Stopwatch()..start();
 
   late final AnimationController _ctrl = AnimationController(
@@ -128,13 +129,16 @@ class _RadialLauncherState extends State<RadialLauncher>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _loadApps();
-    _ensureBubble();
+    _ensureBubble(requestIfNeeded: true);
     _refreshScreenReady();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Re-attempt after the user returns from the system permission screen.
+    // On resume we only *show* the bubble if perm is already granted — we
+    // never re-fire requestPermission here, because returning from the system
+    // settings page itself triggers resumed, which would create a redirect
+    // loop that locks the user on the "Display over other apps" screen.
     if (state == AppLifecycleState.resumed) {
       _ensureBubble();
       _refreshScreenReady();
@@ -165,14 +169,18 @@ class _RadialLauncherState extends State<RadialLauncher>
 
   // ── floating system bubble ─────────────────────────────────────────────────
 
-  /// Make sure the draw-over-other-apps bubble is running. Requests the
-  /// permission if needed (which sends the user to system settings); the
-  /// resumed lifecycle callback retries once they come back.
-  Future<void> _ensureBubble() async {
+  /// Make sure the draw-over-other-apps bubble is running. Only fires
+  /// requestPermission when [requestIfNeeded] is true AND we haven't already
+  /// asked this session — otherwise auto-callers (resume) would re-open the
+  /// settings page every time the user returns to the app, trapping them.
+  Future<void> _ensureBubble({bool requestIfNeeded = false}) async {
     if (await FlutterOverlayWindow.isActive()) return;
     if (!await FlutterOverlayWindow.isPermissionGranted()) {
-      await FlutterOverlayWindow.requestPermission();
-      return; // wait for the user to return; didChangeAppLifecycleState retries
+      if (requestIfNeeded && !_overlayPermAsked) {
+        _overlayPermAsked = true;
+        await FlutterOverlayWindow.requestPermission();
+      }
+      return; // wait until the user grants it; resumed will show it then
     }
     await FlutterOverlayWindow.showOverlay(
       height: kBubbleWindow.toInt(),
@@ -346,8 +354,12 @@ class _RadialLauncherState extends State<RadialLauncher>
                         child: GestureDetector(
                           onDoubleTap: _toggle,
                           // The floating system bubble is the chat entry point
-                          // now; long-press just re-arms it if it was closed.
-                          onLongPress: _ensureBubble,
+                          // now; long-press re-arms it (and may re-ask the
+                          // overlay permission if the user denied it earlier).
+                          onLongPress: () {
+                            _overlayPermAsked = false;
+                            _ensureBubble(requestIfNeeded: true);
+                          },
                           child: const _Hub(key: ValueKey('launcher-hub')),
                         ),
                       ),

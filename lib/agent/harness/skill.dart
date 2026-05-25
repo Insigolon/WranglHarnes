@@ -1,18 +1,25 @@
 import 'tool.dart';
 
-/// A self-contained capability. In Dart these are compiled-in objects (not
-/// filesystem dirs), but the contract mirrors the skill model: a routing
-/// description, a short system prompt, and a scoped tool set (<= 5).
-abstract class Skill {
+/// A self-contained capability loaded from a `skill.md` asset. Everything here
+/// (name, description, instructions) comes from the markdown file; only the
+/// tool implementations are resolved in code, by name, from the tool registry.
+class Skill {
   /// snake_case identifier used by the router.
-  String get name;
+  final String name;
 
   /// <= 30 words; the only thing the router sees.
-  String get description;
+  final String description;
 
   /// The skill's system prompt (keep under ~500 tokens for a 2B model).
-  String get instructions;
+  final String instructions;
 
   /// Scoped tools — never the global set.
-  List<ToolSpec> get tools;
+  final List<ToolSpec> tools;
+
+  const Skill({
+    required this.name,
+    required this.description,
+    required this.instructions,
+    required this.tools,
+  });
 }

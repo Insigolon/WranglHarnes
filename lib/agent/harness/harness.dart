@@ -1,6 +1,4 @@
-import '../skills/apps_skill.dart';
-import '../skills/chat_skill.dart';
-import '../skills/screen_skill.dart';
+import '../skills/skill_loader.dart';
 import 'agent_loop.dart';
 import 'memory.dart';
 import 'model.dart';
@@ -9,16 +7,25 @@ import 'skill.dart';
 
 /// Top-level entry point for one user message: route to a skill, load its
 /// memory, run the loop, persist the outcome, return the reply text.
+///
+/// Skills come from `assets/skills/<name>/skill.md` via [loadBundledSkills];
+/// the harness itself never knows the concrete skill list at compile time.
 class WranglHarness {
   final ModelComplete model;
-  late final List<Skill> skills;
-  late final Skill _fallback;
-  late final SkillRouter _router;
+  final List<Skill> skills;
+  final Skill _fallback;
+  final SkillRouter _router;
 
-  WranglHarness(this.model) {
-    _fallback = ChatSkill();
-    skills = [_fallback, AppsSkill(), ScreenSkill()];
-    _router = SkillRouter(model);
+  WranglHarness._(this.model, this.skills, this._fallback)
+      : _router = SkillRouter(model);
+
+  static Future<WranglHarness> load(ModelComplete model) async {
+    final skills = await loadBundledSkills();
+    final fallback = skills.firstWhere(
+      (s) => s.name == kFallbackSkillName,
+      orElse: () => skills.first,
+    );
+    return WranglHarness._(model, skills, fallback);
   }
 
   Future<String> handle(

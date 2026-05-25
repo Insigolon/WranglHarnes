@@ -1,10 +1,21 @@
 //! Pure, deterministic harness logic for the Wrangl on-device agent.
 //!
-//! This crate intentionally holds **no IO and no model access** — those live
-//! in Dart (flutter_gemma) and Kotlin (screen capture). Rust owns only the
-//! stateless transforms that a lightweight model gets wrong often enough to
-//! warrant a hardened implementation: parsing model output, gating it with
-//! evals, and the deterministic slice of skill routing.
+//! This crate intentionally holds **no model access and no platform code** —
+//! those live in Dart (flutter_gemma) and Kotlin (screen capture, app launch).
+//! Rust owns the stateless decisions a lightweight model gets wrong often
+//! enough to warrant a hardened, testable implementation:
+//!
+//!  - [`parse_output`] — turn a raw model reply into a tool call or final
+//!    answer, tolerating fences and missing wrappers.
+//!  - [`evaluate`] — run the standing guardrails (format / loop / hallucinated
+//!    tool) and produce a retry prompt on failure.
+//!  - [`route_skill`] — the deterministic slice of skill routing (LLM fallback
+//!    stays in Dart).
+//!  - [`decide_next`] — the inner loop's branching logic: given one model
+//!    turn, what should Dart do next (call a tool, retry, emit a final
+//!    answer, or abort).
+
+use crate::json_min::{clean, extract_object_field, extract_string_field};
 
 // ─── Output parsing ──────────────────────────────────────────────────────────
 
@@ -25,83 +36,9 @@ pub struct ParsedOutput {
     pub content: Option<String>,
 }
 
-/// Strip markdown code fences and surrounding whitespace/backticks.
-fn clean(raw: &str) -> String {
-    let mut s = raw.trim().to_string();
-    // Remove a leading ```json / ```tool_call / ``` fence.
-    if let Some(rest) = s.strip_prefix("```") {
-        // drop the fence-language token up to the first newline
-        let rest = match rest.find('\n') {
-            Some(i) => &rest[i + 1..],
-            None => rest,
-        };
-        s = rest.to_string();
-    }
-    s.trim().trim_end_matches('`').trim().to_string()
-}
-
-/// Extract a quoted string value for `"<field>": "<value>"`.
-fn extract_string_field(s: &str, field: &str) -> Option<String> {
-    let key = format!("\"{field}\"");
-    let kpos = s.find(&key)?;
-    let after = &s[kpos + key.len()..];
-    let colon = after.find(':')?;
-    let after = &after[colon + 1..];
-    let q = after.find('"')?;
-    let rest = &after[q + 1..];
-    // find the closing quote, honoring simple backslash escapes
-    let bytes = rest.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => i += 2,
-            b'"' => return Some(rest[..i].to_string()),
-            _ => i += 1,
-        }
-    }
-    None
-}
-
-/// Extract a balanced `{...}` object substring for `"<field>": {...}`.
-fn extract_object_field(s: &str, field: &str) -> Option<String> {
-    let key = format!("\"{field}\"");
-    let kpos = s.find(&key)?;
-    let after = &s[kpos + key.len()..];
-    let brace = after.find('{')?;
-    let region = &after[brace..];
-    let bytes = region.as_bytes();
-    let mut depth = 0i32;
-    let mut in_str = false;
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i];
-        if in_str {
-            match c {
-                b'\\' => i += 1,
-                b'"' => in_str = false,
-                _ => {}
-            }
-        } else {
-            match c {
-                b'"' => in_str = true,
-                b'{' => depth += 1,
-                b'}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Some(region[..=i].to_string());
-                    }
-                }
-                _ => {}
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
 /// Defensively parse one model turn into a tool call or a final answer.
 ///
-/// Order of preference: an explicit `"tool"` field → tool call; a `"answer"`
+/// Order of preference: an explicit `"tool"` field → tool call; an `"answer"`
 /// or `"result"` field → final answer; otherwise the whole cleaned text is
 /// treated as the final answer (lightweight models often skip the wrapper).
 #[flutter_rust_bridge::frb(sync)]
@@ -153,7 +90,15 @@ pub fn evaluate(
     valid_tools: Vec<String>,
     prev_assistant_outputs: Vec<String>,
 ) -> EvalReport {
-    let parsed = parse_output(output_raw.clone());
+    evaluate_internal(&output_raw, &valid_tools, &prev_assistant_outputs)
+}
+
+fn evaluate_internal(
+    output_raw: &str,
+    valid_tools: &[String],
+    prev_assistant_outputs: &[String],
+) -> EvalReport {
+    let parsed = parse_output(output_raw.to_string());
     let mut failures: Vec<String> = Vec::new();
     let mut passed_checks = 0u32;
     let total_checks = 3u32;
@@ -161,9 +106,11 @@ pub fn evaluate(
     // 1. FormatCheck — a final answer must carry non-empty content.
     let format_ok = match parsed.kind {
         ParsedKind::ToolCall => parsed.tool.is_some(),
-        ParsedKind::FinalAnswer => {
-            parsed.content.as_deref().map(|c| !c.trim().is_empty()).unwrap_or(false)
-        }
+        ParsedKind::FinalAnswer => parsed
+            .content
+            .as_deref()
+            .map(|c| !c.trim().is_empty())
+            .unwrap_or(false),
     };
     if format_ok {
         passed_checks += 1;
@@ -179,7 +126,8 @@ pub fn evaluate(
     if loop_ok {
         passed_checks += 1;
     } else {
-        failures.push("Your last two responses were identical — try a different approach".to_string());
+        failures
+            .push("Your last two responses were identical — try a different approach".to_string());
     }
 
     // 3. ToolHallucinationCheck — only the scoped tools may be called.
@@ -200,13 +148,27 @@ pub fn evaluate(
 
     let score = passed_checks as f32 / total_checks as f32;
     if failures.is_empty() {
-        EvalReport { passed: true, score, reason: "all checks passed".to_string(), retry_prompt: String::new() }
+        EvalReport {
+            passed: true,
+            score,
+            reason: "all checks passed".to_string(),
+            retry_prompt: String::new(),
+        }
     } else {
         let retry = format!(
             "Your previous response had issues:\n{}\nPlease try again, addressing each issue.",
-            failures.iter().map(|f| format!("  - {f}")).collect::<Vec<_>>().join("\n")
+            failures
+                .iter()
+                .map(|f| format!("  - {f}"))
+                .collect::<Vec<_>>()
+                .join("\n")
         );
-        EvalReport { passed: false, score, reason: failures.join("; "), retry_prompt: retry }
+        EvalReport {
+            passed: false,
+            score,
+            reason: failures.join("; "),
+            retry_prompt: retry,
+        }
     }
 }
 
@@ -254,4 +216,144 @@ pub fn route_skill(task: String, skills: Vec<SkillDesc>) -> String {
     }
 
     "none".to_string()
+}
+
+// ─── Inner-loop decision ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DecisionAction {
+    /// Dart should run [`StepDecision::tool_name`] with the args in
+    /// [`StepDecision::tool_args_json`], then call [`decide_next`] again with
+    /// the next model output.
+    CallTool,
+    /// Loop is done; return [`StepDecision::final_text`] to the user.
+    EmitFinal,
+    /// Append [`StepDecision::retry_feedback`] as a user turn and re-run the
+    /// model. [`StepDecision::retries_after`] is the new retry counter.
+    Retry,
+    /// Out of retries; return [`StepDecision::final_text`] as a partial answer.
+    Aborted,
+}
+
+/// One iteration of the inner agent loop, expressed as a pure decision.
+///
+/// Dart's role is reduced to: run the model, hand the raw output here, do
+/// whatever this struct says (execute a tool, append a retry prompt, or
+/// return), and repeat.
+///
+/// `new_assistant_log` is what Dart should append to the conversation history
+/// as the assistant turn this iteration (empty when nothing should be logged,
+/// e.g. on an `Aborted` final). For `Retry` the caller still appends the raw
+/// turn before the retry_feedback so the model sees what it did.
+pub struct StepDecision {
+    pub action: DecisionAction,
+    pub tool_name: Option<String>,
+    pub tool_args_json: Option<String>,
+    pub final_text: Option<String>,
+    pub retry_feedback: Option<String>,
+    pub new_assistant_log: String,
+    pub retries_after: u32,
+}
+
+/// Decide what Dart should do after one model turn.
+///
+/// All state Dart needs to thread through the loop is passed in by value here;
+/// Rust holds no mutable state across calls. That keeps the FFI surface tiny
+/// and makes `decide_next` trivially unit-testable.
+#[flutter_rust_bridge::frb(sync)]
+pub fn decide_next(
+    raw_model_output: String,
+    valid_tools: Vec<String>,
+    prev_assistant_outputs: Vec<String>,
+    retries_so_far: u32,
+    max_retries: u32,
+) -> StepDecision {
+    let parsed = parse_output(raw_model_output.clone());
+    let ev = evaluate_internal(&raw_model_output, &valid_tools, &prev_assistant_outputs);
+
+    match parsed.kind {
+        ParsedKind::ToolCall => {
+            if !ev.passed {
+                return retry_or_abort(
+                    &ev,
+                    retries_so_far,
+                    max_retries,
+                    raw_model_output, // log the bad tool call before the retry prompt
+                );
+            }
+            StepDecision {
+                action: DecisionAction::CallTool,
+                tool_name: parsed.tool,
+                tool_args_json: parsed.args_json,
+                final_text: None,
+                retry_feedback: None,
+                new_assistant_log: raw_model_output,
+                retries_after: retries_so_far,
+            }
+        }
+        ParsedKind::FinalAnswer => {
+            let content = parsed.content.unwrap_or_else(|| raw_model_output.clone());
+            if ev.passed {
+                return StepDecision {
+                    action: DecisionAction::EmitFinal,
+                    tool_name: None,
+                    tool_args_json: None,
+                    final_text: Some(content),
+                    retry_feedback: None,
+                    new_assistant_log: raw_model_output,
+                    retries_after: retries_so_far,
+                };
+            }
+            if retries_so_far < max_retries {
+                return StepDecision {
+                    action: DecisionAction::Retry,
+                    tool_name: None,
+                    tool_args_json: None,
+                    final_text: None,
+                    retry_feedback: Some(ev.retry_prompt),
+                    new_assistant_log: raw_model_output,
+                    retries_after: retries_so_far + 1,
+                };
+            }
+            // Out of retries on a final answer — return what we have.
+            StepDecision {
+                action: DecisionAction::Aborted,
+                tool_name: None,
+                tool_args_json: None,
+                final_text: Some(content),
+                retry_feedback: None,
+                new_assistant_log: String::new(),
+                retries_after: retries_so_far,
+            }
+        }
+    }
+}
+
+fn retry_or_abort(
+    ev: &EvalReport,
+    retries_so_far: u32,
+    max_retries: u32,
+    raw_for_log: String,
+) -> StepDecision {
+    if retries_so_far < max_retries {
+        StepDecision {
+            action: DecisionAction::Retry,
+            tool_name: None,
+            tool_args_json: None,
+            final_text: None,
+            retry_feedback: Some(ev.retry_prompt.clone()),
+            new_assistant_log: raw_for_log,
+            retries_after: retries_so_far + 1,
+        }
+    } else {
+        StepDecision {
+            action: DecisionAction::Aborted,
+            tool_name: None,
+            tool_args_json: None,
+            final_text: Some(format!("I could not complete that: {}", ev.reason)),
+            retry_feedback: None,
+            new_assistant_log: String::new(),
+            retries_after: retries_so_far,
+        }
+    }
 }

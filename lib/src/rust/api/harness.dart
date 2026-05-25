@@ -6,12 +6,12 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `clean`, `extract_object_field`, `extract_string_field`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `eq`, `fmt`
+// These functions are ignored because they are not marked as `pub`: `evaluate_internal`, `retry_or_abort`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`
 
 /// Defensively parse one model turn into a tool call or a final answer.
 ///
-/// Order of preference: an explicit `"tool"` field → tool call; a `"answer"`
+/// Order of preference: an explicit `"tool"` field → tool call; an `"answer"`
 /// or `"result"` field → final answer; otherwise the whole cleaned text is
 /// treated as the final answer (lightweight models often skip the wrapper).
 ParsedOutput parseOutput({required String raw}) =>
@@ -39,6 +39,42 @@ EvalReport evaluate({
 /// Only ever returns a skill that is actually present in `skills`.
 String routeSkill({required String task, required List<SkillDesc> skills}) =>
     RustLib.instance.api.crateApiHarnessRouteSkill(task: task, skills: skills);
+
+/// Decide what Dart should do after one model turn.
+///
+/// All state Dart needs to thread through the loop is passed in by value here;
+/// Rust holds no mutable state across calls. That keeps the FFI surface tiny
+/// and makes `decide_next` trivially unit-testable.
+StepDecision decideNext({
+  required String rawModelOutput,
+  required List<String> validTools,
+  required List<String> prevAssistantOutputs,
+  required int retriesSoFar,
+  required int maxRetries,
+}) => RustLib.instance.api.crateApiHarnessDecideNext(
+  rawModelOutput: rawModelOutput,
+  validTools: validTools,
+  prevAssistantOutputs: prevAssistantOutputs,
+  retriesSoFar: retriesSoFar,
+  maxRetries: maxRetries,
+);
+
+enum DecisionAction {
+  /// Dart should run [`StepDecision::tool_name`] with the args in
+  /// [`StepDecision::tool_args_json`], then call [`decide_next`] again with
+  /// the next model output.
+  callTool,
+
+  /// Loop is done; return [`StepDecision::final_text`] to the user.
+  emitFinal,
+
+  /// Append [`StepDecision::retry_feedback`] as a user turn and re-run the
+  /// model. [`StepDecision::retries_after`] is the new retry counter.
+  retry,
+
+  /// Out of retries; return [`StepDecision::final_text`] as a partial answer.
+  aborted,
+}
 
 /// Aggregated verdict over all guardrail checks for one model turn.
 class EvalReport {
@@ -121,4 +157,57 @@ class SkillDesc {
           runtimeType == other.runtimeType &&
           name == other.name &&
           description == other.description;
+}
+
+/// One iteration of the inner agent loop, expressed as a pure decision.
+///
+/// Dart's role is reduced to: run the model, hand the raw output here, do
+/// whatever this struct says (execute a tool, append a retry prompt, or
+/// return), and repeat.
+///
+/// `new_assistant_log` is what Dart should append to the conversation history
+/// as the assistant turn this iteration (empty when nothing should be logged,
+/// e.g. on an `Aborted` final). For `Retry` the caller still appends the raw
+/// turn before the retry_feedback so the model sees what it did.
+class StepDecision {
+  final DecisionAction action;
+  final String? toolName;
+  final String? toolArgsJson;
+  final String? finalText;
+  final String? retryFeedback;
+  final String newAssistantLog;
+  final int retriesAfter;
+
+  const StepDecision({
+    required this.action,
+    this.toolName,
+    this.toolArgsJson,
+    this.finalText,
+    this.retryFeedback,
+    required this.newAssistantLog,
+    required this.retriesAfter,
+  });
+
+  @override
+  int get hashCode =>
+      action.hashCode ^
+      toolName.hashCode ^
+      toolArgsJson.hashCode ^
+      finalText.hashCode ^
+      retryFeedback.hashCode ^
+      newAssistantLog.hashCode ^
+      retriesAfter.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is StepDecision &&
+          runtimeType == other.runtimeType &&
+          action == other.action &&
+          toolName == other.toolName &&
+          toolArgsJson == other.toolArgsJson &&
+          finalText == other.finalText &&
+          retryFeedback == other.retryFeedback &&
+          newAssistantLog == other.newAssistantLog &&
+          retriesAfter == other.retriesAfter;
 }

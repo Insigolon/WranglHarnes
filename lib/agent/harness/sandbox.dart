@@ -1,9 +1,13 @@
 import 'dart:async';
+
+import '../../src/rust/api/sandbox.dart' as rust;
 import 'tool.dart';
 
+const int _kMaxToolTextChars = 500;
+
 /// Run a tool call defensively: resolve the name, enforce a timeout, truncate
-/// text output, and turn every failure into an `ERROR:` string that re-enters
-/// the loop rather than throwing.
+/// text output via Rust, and turn every failure into an `ERROR:` string that
+/// re-enters the loop rather than throwing.
 Future<ToolResult> runTool(
   List<ToolSpec> tools,
   String name,
@@ -21,8 +25,10 @@ Future<ToolResult> runTool(
 
   try {
     final r = await spec.run(args).timeout(timeout);
-    if (r.kind == ToolResultKind.text && r.text.length > 500) {
-      return ToolResult.text(r.text.substring(0, 500));
+    if (r.kind == ToolResultKind.text) {
+      return ToolResult.text(
+        rust.truncateToolText(text: r.text, maxChars: _kMaxToolTextChars),
+      );
     }
     return r;
   } on TimeoutException {

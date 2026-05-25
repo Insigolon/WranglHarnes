@@ -7,6 +7,8 @@
 // ignore_for_file: argument_type_not_assignable
 
 import 'api/harness.dart';
+import 'api/memory.dart';
+import 'api/sandbox.dart';
 import 'api/simple.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -28,6 +30,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool dco_decode_bool(dynamic raw);
 
   @protected
+  DecisionAction dco_decode_decision_action(dynamic raw);
+
+  @protected
   EvalReport dco_decode_eval_report(dynamic raw);
 
   @protected
@@ -40,10 +45,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<String> dco_decode_list_String(dynamic raw);
 
   @protected
+  List<MemoryEntry> dco_decode_list_memory_entry(dynamic raw);
+
+  @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
   List<SkillDesc> dco_decode_list_skill_desc(dynamic raw);
+
+  @protected
+  MemoryEntry dco_decode_memory_entry(dynamic raw);
 
   @protected
   String? dco_decode_opt_String(dynamic raw);
@@ -58,6 +69,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SkillDesc dco_decode_skill_desc(dynamic raw);
 
   @protected
+  StepDecision dco_decode_step_decision(dynamic raw);
+
+  @protected
+  int dco_decode_u_32(dynamic raw);
+
+  @protected
   int dco_decode_u_8(dynamic raw);
 
   @protected
@@ -68,6 +85,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool sse_decode_bool(SseDeserializer deserializer);
+
+  @protected
+  DecisionAction sse_decode_decision_action(SseDeserializer deserializer);
 
   @protected
   EvalReport sse_decode_eval_report(SseDeserializer deserializer);
@@ -82,10 +102,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<String> sse_decode_list_String(SseDeserializer deserializer);
 
   @protected
+  List<MemoryEntry> sse_decode_list_memory_entry(SseDeserializer deserializer);
+
+  @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
   List<SkillDesc> sse_decode_list_skill_desc(SseDeserializer deserializer);
+
+  @protected
+  MemoryEntry sse_decode_memory_entry(SseDeserializer deserializer);
 
   @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
@@ -100,6 +126,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SkillDesc sse_decode_skill_desc(SseDeserializer deserializer);
 
   @protected
+  StepDecision sse_decode_step_decision(SseDeserializer deserializer);
+
+  @protected
+  int sse_decode_u_32(SseDeserializer deserializer);
+
+  @protected
   int sse_decode_u_8(SseDeserializer deserializer);
 
   @protected
@@ -110,6 +142,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_decision_action(
+    DecisionAction self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_eval_report(EvalReport self, SseSerializer serializer);
@@ -124,6 +162,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
 
   @protected
+  void sse_encode_list_memory_entry(
+    List<MemoryEntry> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_prim_u_8_strict(
     Uint8List self,
     SseSerializer serializer,
@@ -136,6 +180,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_memory_entry(MemoryEntry self, SseSerializer serializer);
+
+  @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer);
 
   @protected
@@ -146,6 +193,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_skill_desc(SkillDesc self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_step_decision(StepDecision self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_u_32(int self, SseSerializer serializer);
 
   @protected
   void sse_encode_u_8(int self, SseSerializer serializer);
