@@ -11,6 +11,22 @@ import 'screens/model_download_screen.dart';
 import 'src/rust/api/simple.dart';
 import 'src/rust/frb_generated.dart';
 
+/// Reliable overlay-permission bridge to [MainActivity]'s Kotlin channel.
+/// Unlike `FlutterOverlayWindow.requestPermission()`, this suspends until the
+/// user returns from Settings, then reports the real grant state.
+class _OverlayPermission {
+  _OverlayPermission._();
+  static const _ch = MethodChannel('wrangl/overlay_permission');
+
+  static Future<bool> isGranted() async =>
+      (await _ch.invokeMethod<bool>('check')) ?? false;
+
+  /// Opens the system "Display over other apps" page and returns `true` only
+  /// after the user has granted the permission and returned to the app.
+  static Future<bool> request() async =>
+      (await _ch.invokeMethod<bool>('request')) ?? false;
+}
+
 class _AppLauncher {
   static Future<List<AppEntry>> getInstalledApps() async {
     final raw = await WranglNative.getInstalledApps();
@@ -38,8 +54,8 @@ void main() async {
   // isolate only needs to know whether it has already been downloaded.
   final path = await ModelConfig.path();
   final file = File(path);
-  final modelReady =
-      await file.exists() && await file.length() > 100 * 1024 * 1024;
+      final modelReady = await file.exists() &&
+          await file.length() > ModelConfig.minSize;
 
   runApp(MyApp(modelReady: modelReady));
 }
@@ -113,14 +129,12 @@ class RadialLauncher extends StatefulWidget {
 }
 
 class _RadialLauncherState extends State<RadialLauncher>
-    with TickerProviderStateMixin, WidgetsBindingObserver {
+    with TickerProviderStateMixin {
   // launcher state
   bool _open = false;
   int? _selSlot;
   int _offset = 0;
   List<AppEntry> _apps = const [];
-  bool _overlayPermAsked = false; // ask the system overlay perm at most once per session
-  bool _screenConsentAsked = false; // ask the MediaProjection consent at most once per session
   final Stopwatch _pageStopwatch = Stopwatch()..start();
 
   late final AnimationController _ctrl = AnimationController(
@@ -135,34 +149,7 @@ class _RadialLauncherState extends State<RadialLauncher>
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     _loadApps();
-    _ensureBubble(requestIfNeeded: true);
-    _ensureScreenConsent();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    // On resume we only *show* the bubble if perm is already granted — we
-    // never re-fire requestPermission here, because returning from the system
-    // settings page itself triggers resumed, which would create a redirect
-    // loop that locks the user on the "Display over other apps" screen.
-    if (state == AppLifecycleState.resumed) {
-      _ensureBubble();
-    }
-  }
-
-  // ── screen access (MediaProjection) ────────────────────────────────────────
-
-  /// Auto-grant: request the per-session MediaProjection consent at most once
-  /// per app launch. There is no in-app toggle anymore — the model runs
-  /// locally, so capture should Just Work. The user can re-trigger via the
-  /// hub long-press if they denied the system dialog.
-  Future<void> _ensureScreenConsent() async {
-    if (_screenConsentAsked) return;
-    if (await WranglNative.isScreenReady()) return;
-    _screenConsentAsked = true;
-    await WranglNative.requestScreenConsent();
   }
 
   Future<void> _loadApps() async {
@@ -170,30 +157,53 @@ class _RadialLauncherState extends State<RadialLauncher>
     if (mounted) setState(() => _apps = entries);
   }
 
-  // ── floating system bubble ─────────────────────────────────────────────────
+  // ── overlay activation ──────────────────────────────────
 
-  /// Make sure the draw-over-other-apps bubble is running. Only fires
-  /// requestPermission when [requestIfNeeded] is true AND we haven't already
-  /// asked this session — otherwise auto-callers (resume) would re-open the
-  /// settings page every time the user returns to the app, trapping them.
-  Future<void> _ensureBubble({bool requestIfNeeded = false}) async {
-    if (await FlutterOverlayWindow.isActive()) return;
-    if (!await FlutterOverlayWindow.isPermissionGranted()) {
-      if (requestIfNeeded && !_overlayPermAsked) {
-        _overlayPermAsked = true;
-        await FlutterOverlayWindow.requestPermission();
+  Future<void> _openOverlay() async {
+    final granted = await _OverlayPermission.isGranted();
+    if (!granted) {
+      final afterGrant = await _OverlayPermission.request();
+      if (!afterGrant) {
+        if (mounted) _showOverlayDeniedDialog();
+        return;
       }
-      return; // wait until the user grants it; resumed will show it then
     }
-    await FlutterOverlayWindow.showOverlay(
-      height: kBubbleWindow.toInt(),
-      width: kBubbleWindow.toInt(),
-      alignment: OverlayAlignment.centerRight,
-      flag: OverlayFlag.defaultFlag,
-      enableDrag: true,
-      positionGravity: PositionGravity.auto,
-      overlayTitle: 'Wrangl',
-      overlayContent: 'Tap the bubble to chat',
+    final view = WidgetsBinding.instance.platformDispatcher.views.first;
+    final fs = view.physicalSize / view.devicePixelRatio;
+    try {
+      await FlutterOverlayWindow.showOverlay(
+        height: fs.height.toInt(),
+        width: fs.width.toInt(),
+        alignment: OverlayAlignment.center,
+        flag: OverlayFlag.focusPointer,
+        enableDrag: false,
+        overlayTitle: 'Wrangl',
+        overlayContent: 'Chat with Gemma',
+      );
+    } catch (e) {
+      debugPrint('[overlay] launch failed: $e');
+    }
+  }
+
+  void _showOverlayDeniedDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: const Text('Overlay Permission Needed',
+            style: TextStyle(color: Color(0xFFF0EFEB))),
+        content: const Text(
+          'Wrangl needs "Display over other apps" to show the chat '
+          'overlay. Please enable it in Settings → Display over other apps.',
+          style: TextStyle(color: Color(0xFFF0EFEB)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('OK', style: TextStyle(color: Color(0xFFFF2200))),
+          ),
+        ],
+      ),
     );
   }
 
@@ -306,7 +316,6 @@ class _RadialLauncherState extends State<RadialLauncher>
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
     _ctrl.dispose();
     super.dispose();
   }
@@ -356,14 +365,7 @@ class _RadialLauncherState extends State<RadialLauncher>
                         top: anchor.dy - _kHubR,
                         child: GestureDetector(
                           onDoubleTap: _toggle,
-                          // Manual re-trigger for both system permissions in
-                          // case the user denied the dialog the first time.
-                          onLongPress: () {
-                            _overlayPermAsked = false;
-                            _screenConsentAsked = false;
-                            _ensureBubble(requestIfNeeded: true);
-                            _ensureScreenConsent();
-                          },
+                          onLongPress: _openOverlay,
                           child: const _Hub(key: ValueKey('launcher-hub')),
                         ),
                       ),

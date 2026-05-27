@@ -38,7 +38,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -37313148;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -766573544;
 
 // Section: executor
 
@@ -319,38 +319,6 @@ fn wire__crate__api__harness__parse_output_impl(
         },
     )
 }
-fn wire__crate__api__harness__route_skill_impl(
-    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
-    rust_vec_len_: i32,
-    data_len_: i32,
-) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
-        flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "route_skill",
-            port: None,
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
-        },
-        move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_task = <String>::sse_decode(&mut deserializer);
-            let api_skills = <Vec<crate::api::harness::SkillDesc>>::sse_decode(&mut deserializer);
-            deserializer.end();
-            transform_result_sse::<_, ()>((move || {
-                let output_ok =
-                    Result::<_, ()>::Ok(crate::api::harness::route_skill(api_task, api_skills))?;
-                Ok(output_ok)
-            })())
-        },
-    )
-}
 fn wire__crate__api__sandbox__truncate_tool_text_impl(
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -483,18 +451,6 @@ impl SseDecode for Vec<u8> {
     }
 }
 
-impl SseDecode for Vec<crate::api::harness::SkillDesc> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut len_ = <i32>::sse_decode(deserializer);
-        let mut ans_ = Vec::with_capacity(len_ as usize);
-        for idx_ in 0..len_ {
-            ans_.push(<crate::api::harness::SkillDesc>::sse_decode(deserializer));
-        }
-        return ans_;
-    }
-}
-
 impl SseDecode for crate::api::memory::MemoryEntry {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -542,18 +498,6 @@ impl SseDecode for crate::api::harness::ParsedOutput {
             tool: var_tool,
             args_json: var_argsJson,
             content: var_content,
-        };
-    }
-}
-
-impl SseDecode for crate::api::harness::SkillDesc {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_name = <String>::sse_decode(deserializer);
-        let mut var_description = <String>::sse_decode(deserializer);
-        return crate::api::harness::SkillDesc {
-            name: var_name,
-            description: var_description,
         };
     }
 }
@@ -628,8 +572,7 @@ fn pde_ffi_dispatcher_sync_impl(
         6 => wire__crate__api__memory__memory_load_impl(ptr, rust_vec_len, data_len),
         7 => wire__crate__api__memory__memory_render_impl(ptr, rust_vec_len, data_len),
         8 => wire__crate__api__harness__parse_output_impl(ptr, rust_vec_len, data_len),
-        9 => wire__crate__api__harness__route_skill_impl(ptr, rust_vec_len, data_len),
-        10 => wire__crate__api__sandbox__truncate_tool_text_impl(ptr, rust_vec_len, data_len),
+        9 => wire__crate__api__sandbox__truncate_tool_text_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -748,27 +691,6 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::harness::ParsedOutput>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::harness::SkillDesc {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.name.into_into_dart().into_dart(),
-            self.description.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::harness::SkillDesc
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::harness::SkillDesc>
-    for crate::api::harness::SkillDesc
-{
-    fn into_into_dart(self) -> crate::api::harness::SkillDesc {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::harness::StepDecision {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -881,16 +803,6 @@ impl SseEncode for Vec<u8> {
     }
 }
 
-impl SseEncode for Vec<crate::api::harness::SkillDesc> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <i32>::sse_encode(self.len() as _, serializer);
-        for item in self {
-            <crate::api::harness::SkillDesc>::sse_encode(item, serializer);
-        }
-    }
-}
-
 impl SseEncode for crate::api::memory::MemoryEntry {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -932,14 +844,6 @@ impl SseEncode for crate::api::harness::ParsedOutput {
         <Option<String>>::sse_encode(self.tool, serializer);
         <Option<String>>::sse_encode(self.args_json, serializer);
         <Option<String>>::sse_encode(self.content, serializer);
-    }
-}
-
-impl SseEncode for crate::api::harness::SkillDesc {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.name, serializer);
-        <String>::sse_encode(self.description, serializer);
     }
 }
 

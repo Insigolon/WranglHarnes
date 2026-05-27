@@ -33,13 +33,6 @@ EvalReport evaluate({
   prevAssistantOutputs: prevAssistantOutputs,
 );
 
-/// Deterministic fast-path router. Returns the matched skill name, or "none"
-/// to signal that Dart should fall back to an LLM routing call.
-///
-/// Only ever returns a skill that is actually present in `skills`.
-String routeSkill({required String task, required List<SkillDesc> skills}) =>
-    RustLib.instance.api.crateApiHarnessRouteSkill(task: task, skills: skills);
-
 /// Decide what Dart should do after one model turn.
 ///
 /// All state Dart needs to thread through the loop is passed in by value here;
@@ -139,24 +132,6 @@ class ParsedOutput {
           tool == other.tool &&
           argsJson == other.argsJson &&
           content == other.content;
-}
-
-class SkillDesc {
-  final String name;
-  final String description;
-
-  const SkillDesc({required this.name, required this.description});
-
-  @override
-  int get hashCode => name.hashCode ^ description.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is SkillDesc &&
-          runtimeType == other.runtimeType &&
-          name == other.name &&
-          description == other.description;
 }
 
 /// One iteration of the inner agent loop, expressed as a pure decision.

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Wires Wrangl's VoiceInteractionService to its session factory + recognition
+  stub. supportsAssist="true" is the bit that opts us in to receiving the
+  AssistStructure and screenshot when the user fires the assist gesture.
+
+  recognitionService is required by the platform parser even though Wrangl
+  doesn't do speech recognition — see WranglRecognitionService for the stub
+  it points at.
+-->
+<voice-interaction-service
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="com.wrangl.wrangl_native.WranglVoiceSessionService"
+    android:recognitionService="com.wrangl.wrangl_native.WranglRecognitionService"
+    android:supportsAssist="true"
+    android:supportsLaunchVoiceAssistFromKeyguard="false" />

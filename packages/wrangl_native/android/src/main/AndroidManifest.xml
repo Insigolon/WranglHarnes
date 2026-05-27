@@ -1,8 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
-
     <!-- See/list other launchable apps (Android 11+ package visibility) -->
     <queries>
         <intent>
@@ -12,9 +9,50 @@
     </queries>
 
     <application>
+
+        <!--
+          ─── Assist API: Wrangl as the user's digital assistant ─────────────
+          When the user picks Wrangl in
+            Settings → Apps → Default apps → Digital assistant app
+          the system binds these services on the assist gesture and delivers
+          a screenshot + AssistStructure of the foreground app — no
+          MediaProjection prompt, no recording notification.
+
+          BIND_VOICE_INTERACTION is a system-signature permission; declaring
+          it on the service guarantees only the platform can bind to us.
+        -->
         <service
-            android:name=".ScreenCaptureService"
-            android:exported="false"
-            android:foregroundServiceType="mediaProjection"/>
+            android:name=".WranglVoiceInteractionService"
+            android:permission="android.permission.BIND_VOICE_INTERACTION"
+            android:exported="true">
+            <meta-data
+                android:name="android.voice_interaction"
+                android:resource="@xml/interaction_service"/>
+            <intent-filter>
+                <action android:name="android.service.voice.VoiceInteractionService"/>
+            </intent-filter>
+        </service>
+
+        <service
+            android:name=".WranglVoiceSessionService"
+            android:permission="android.permission.BIND_VOICE_INTERACTION"
+            android:exported="true"/>
+
+        <!--
+          Stub RecognitionService — required by the voice-interaction XML
+          parser even though Wrangl never invokes speech recognition.
+          See WranglRecognitionService.kt for the no-op implementation.
+        -->
+        <service
+            android:name=".WranglRecognitionService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.speech.RecognitionService"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.speech"
+                android:resource="@xml/recognition_service"/>
+        </service>
+
     </application>
 </manifest>

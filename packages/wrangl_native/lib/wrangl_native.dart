@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/services.dart';
 
 /// Native bridge for Wrangl. Because this is a real plugin package, its
@@ -7,6 +8,7 @@ class WranglNative {
   WranglNative._();
 
   static const MethodChannel _ch = MethodChannel('wrangl/native');
+  static const EventChannel _assistCh = EventChannel('wrangl/assist_events');
 
   // ── App launching ──────────────────────────────────────────────────────────
 
@@ -30,28 +32,24 @@ class WranglNative {
         false;
   }
 
-  // ── Screen capture (MediaProjection) ─────────────────────────────────────────
+  // ── Screen capture (MediaProjection) ──────────────────────────────────────
 
-  /// Ask the user for screen-capture consent and start the capture service.
-  /// Must be called from the main app (it needs an Activity). Returns true once
-  /// consent is granted and the capture service is running.
-  static Future<bool> requestScreenConsent() async {
-    return await _ch.invokeMethod<bool>('requestScreenConsent') ?? false;
+  /// Capture the current screen contents via MediaProjection.
+  /// Returns JPEG bytes or throws if permission was denied or capture failed.
+  /// The first call triggers a system consent dialog; subsequent calls are
+  /// automatic.
+  static Future<Uint8List> captureScreen() async {
+    final raw = await _ch.invokeMethod<Uint8List>('captureScreen');
+    if (raw == null) throw Exception('Screen capture returned no data');
+    return raw;
   }
 
-  /// Whether the capture service currently holds a live MediaProjection.
-  static Future<bool> isScreenReady() async {
-    return await _ch.invokeMethod<bool>('isScreenReady') ?? false;
-  }
+  // ── Assist event stream ──────────────────────────────────────────────────────
 
-  /// Grab a single downscaled JPEG frame of the current screen, or null if
-  /// capture isn't available. Safe to call from the overlay isolate.
-  static Future<Uint8List?> captureScreen() async {
-    return await _ch.invokeMethod<Uint8List>('captureScreen');
-  }
-
-  /// Tear down the capture service and release the projection.
-  static Future<void> stopScreen() async {
-    await _ch.invokeMethod<void>('stopScreen');
-  }
+  /// Listen for assist events pushed from native (e.g. double-tap back).
+  /// Payload: `{"image": Uint8List?, "hint": String?}`.
+  static Stream<Map<String, dynamic>> get assistStream =>
+      _assistCh.receiveBroadcastStream().map(
+            (e) => Map<String, dynamic>.from(e as Map),
+          );
 }

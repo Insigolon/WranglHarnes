@@ -1,32 +1,35 @@
-// lib/overlay/bubble_overlay.dart
-//
-// Everything that runs inside the *overlay isolate* — the floating Wrangl
-// bubble that sits over other apps, and the chat panel it expands into.
-//
-// This isolate is separate from the main app, so it owns its own Gemma model
-// instance ([_OverlayAgent]) loaded lazily from the on-disk model file the
-// downloader already fetched. The collapsed bubble is a tiny system window;
-// long-pressing it grows the window to full-screen and shows the chat.
+import 'dart:async';
+import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
+import 'package:wrangl_native/wrangl_native.dart';
 
 import '../agent/gemma_client.dart';
 import '../agent/harness/harness.dart';
 import '../agent/model_config.dart';
 
 // ─── Window sizing ───────────────────────────────────────────────────────────
-// The collapsed bubble lives in a small square window; extra room leaves space
-// for the drop shadow so it isn't clipped at the window edge.
-const double kBubbleWindow = 72;
-const double kBubbleDiameter = 60;
+const double kBubbleWindow = 80;
+
+/// Workaround for flutter_overlay_window 0.5.0's broken `resizeOverlay` height
+/// handling: `WindowSize.matchParent` (-1) is passed through `dpToPx` and
+/// becomes ~-3 px.  We always resolve the fullscreen size explicitly.
+Size _fullscreenDp() {
+  final view = WidgetsBinding.instance.platformDispatcher.views.first;
+  return view.physicalSize / view.devicePixelRatio;
+}
 
 // ─── Palette ─────────────────────────────────────────────────────────────────
 const _kRed = Color(0xFFFF2200);
 const _kWhite = Color(0xFFF0EFEB);
-final _kBubbleBlack = Colors.black.withOpacity(0.80); // chat bubbles, per spec
-final _kComposer = Colors.black.withOpacity(0.80);
+const _kSolidBg = Color(0xFF1A1A1A);
+final _kBubbleBlack = Colors.black.withValues(alpha: 0.80);
+final _kComposer = Colors.black.withValues(alpha: 0.80);
+
+enum _OverlayMode { collapsed, selecting, expanded }
 
 // ─── Overlay-side chat message ────────────────────────────────────────────────
 class _Msg {
@@ -40,15 +43,14 @@ class _OverlayAgent extends ChangeNotifier {
   GemmaModelClient? _client;
   WranglHarness? _harness;
 
-  bool loading = false; // a request is in flight
-  bool booting = false; // model is loading from disk
+  Uint8List? pendingImage;
+
+  bool loading = false;
+  bool booting = false;
   bool ready = false;
   String? error;
   final List<_Msg> messages = [];
 
-  /// Load the model the first time the chat is opened, then build the harness
-  /// on top of it. Vision is requested; GemmaModelClient falls back to
-  /// text-only if the model file has no vision encoder.
   Future<void> ensureLoaded() async {
     if (ready || booting) return;
     booting = true;
@@ -58,7 +60,7 @@ class _OverlayAgent extends ChangeNotifier {
       final path = await ModelConfig.path();
       _client = GemmaModelClient(path);
       await _client!.loadModel(withVision: true);
-      _harness = await WranglHarness.load(_complete);
+      _harness = WranglHarness.load(_complete);
       ready = true;
     } catch (e) {
       error = '$e';
@@ -68,26 +70,30 @@ class _OverlayAgent extends ChangeNotifier {
     }
   }
 
-  /// Adapter from the harness's [ModelComplete] contract to GemmaModelClient.
   Future<String> _complete({
     required String system,
     required List<Map<String, dynamic>> history,
     Uint8List? image,
     int maxTokens = 512,
   }) {
-    return _client!.complete(system, history, maxTokens: maxTokens, image: image);
+    return _client!.complete(
+      system,
+      history,
+      maxTokens: maxTokens,
+      image: image,
+    );
   }
 
-  Future<void> send(String text) async {
+  Future<void> send(String text, {Uint8List? image}) async {
     if (!ready || _harness == null || loading) return;
 
-    // Snapshot the clean conversation so far (text turns only) so the harness
-    // keeps multi-turn context, then add the new user message.
     final prior = messages
-        .map((m) => <String, dynamic>{
-              'role': m.fromUser ? 'user' : 'assistant',
-              'content': m.text,
-            })
+        .map(
+          (m) => <String, dynamic>{
+            'role': m.fromUser ? 'user' : 'assistant',
+            'content': m.text,
+          },
+        )
         .toList();
     if (prior.length > 6) prior.removeRange(0, prior.length - 6);
 
@@ -96,7 +102,11 @@ class _OverlayAgent extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final reply = await _harness!.handle(text, priorTurns: prior);
+      final reply = await _harness!.handle(
+        text,
+        image: image,
+        priorTurns: prior,
+      );
       messages.add(_Msg(false, reply));
     } catch (e) {
       messages.add(_Msg(false, 'Error: $e'));
@@ -121,7 +131,6 @@ class WranglBubbleRoot extends StatelessWidget {
   Widget build(BuildContext context) {
     return const MaterialApp(
       debugShowCheckedModeBanner: false,
-      // Transparent so the underlying app shows through when collapsed.
       color: Color(0x00000000),
       home: _BubbleSurface(),
     );
@@ -139,13 +148,31 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
   final _agent = _OverlayAgent();
   final _input = TextEditingController();
   final _scroll = ScrollController();
-  bool _expanded = false;
-  bool _busy = false; // guards overlapping expand/collapse window resizes
+  StreamSubscription<Map<String, dynamic>>? _assistSub;
+  _OverlayMode _mode = _OverlayMode.collapsed;
+  bool _busy = false;
+  bool _autoExpandChecked = false;
+
+  Uint8List? _screenshot;
+  List<Offset> _lassoPoints = [];
+  Rect? _cropRect;
 
   @override
   void initState() {
     super.initState();
     _agent.addListener(_onAgent);
+    _assistSub = WranglNative.assistStream.listen(_onAssist);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _checkAutoExpand());
+  }
+
+  void _checkAutoExpand() {
+    if (_autoExpandChecked || _mode != _OverlayMode.collapsed || !mounted) {
+      return;
+    }
+    _autoExpandChecked = true;
+    if (MediaQuery.of(context).size.width > kBubbleWindow + 50) {
+      _expand(haptic: false);
+    }
   }
 
   @override
@@ -154,7 +181,20 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
     _agent.dispose();
     _input.dispose();
     _scroll.dispose();
+    _assistSub?.cancel();
     super.dispose();
+  }
+
+  void _onAssist(Map<String, dynamic> payload) {
+    final image = payload['image'] as Uint8List?;
+    final hint = payload['hint'] as String?;
+    if (image != null) {
+      _screenshot = image;
+    }
+    if (hint != null && hint.isNotEmpty) {
+      _input.text = hint;
+    }
+    _enterSelection();
   }
 
   void _onAgent() {
@@ -174,29 +214,32 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
 
   // ── expand / collapse ──────────────────────────────────────────────────────
 
-  Future<void> _expand() async {
-    if (_busy || _expanded) return;
+  Future<void> _expand({bool haptic = true}) async {
+    if (_busy || _mode == _OverlayMode.expanded) return;
     _busy = true;
-    HapticFeedback.mediumImpact();
-    // Grow the system window to fill the screen and let it take keyboard focus
-    // *before* we paint the chat, so nothing gets clipped to the bubble size.
+    if (haptic) HapticFeedback.mediumImpact();
+    final fs = _fullscreenDp();
     await FlutterOverlayWindow.resizeOverlay(
-      WindowSize.matchParent,
-      WindowSize.matchParent,
+      fs.width.round(),
+      fs.height.round(),
       false,
     );
     await FlutterOverlayWindow.updateFlag(OverlayFlag.focusPointer);
-    if (mounted) setState(() => _expanded = true);
+    if (mounted) setState(() => _mode = _OverlayMode.expanded);
     _busy = false;
     _agent.ensureLoaded();
   }
 
   Future<void> _collapse() async {
-    if (_busy || !_expanded) return;
+    if (_busy || _mode == _OverlayMode.collapsed) return;
     _busy = true;
     FocusScope.of(context).unfocus();
-    setState(() => _expanded = false);
-    // Shrink the window back to the bubble and stop intercepting touches.
+    setState(() {
+      _mode = _OverlayMode.collapsed;
+      _screenshot = null;
+      _lassoPoints = [];
+      _cropRect = null;
+    });
     await FlutterOverlayWindow.updateFlag(OverlayFlag.defaultFlag);
     await FlutterOverlayWindow.resizeOverlay(
       kBubbleWindow.toInt(),
@@ -206,51 +249,176 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
     _busy = false;
   }
 
+  // ── selection overlay ──────────────────────────────────────────────────────
+
+  Future<void> _enterSelection() async {
+    if (_busy || _mode == _OverlayMode.selecting) return;
+    _busy = true;
+    final fs = _fullscreenDp();
+    await FlutterOverlayWindow.resizeOverlay(
+      fs.width.round(),
+      fs.height.round(),
+      false,
+    );
+    await FlutterOverlayWindow.updateFlag(OverlayFlag.defaultFlag);
+    if (mounted) {
+      setState(() {
+        _mode = _OverlayMode.selecting;
+        _lassoPoints = [];
+        _cropRect = null;
+      });
+    }
+    _busy = false;
+  }
+
+  void _onLassoStart(DragStartDetails d) {
+    _lassoPoints = [d.localPosition];
+    _cropRect = null;
+    setState(() {});
+  }
+
+  void _onLassoUpdate(DragUpdateDetails d) {
+    _lassoPoints.add(d.localPosition);
+    setState(() {});
+  }
+
+  void _onLassoEnd(DragEndDetails d) {
+    if (_lassoPoints.length < 3) {
+      _collapse();
+      return;
+    }
+    _cropRect = _computeBoundingBox(_lassoPoints);
+    _cropAndSend();
+  }
+
+  Rect _computeBoundingBox(List<Offset> points) {
+    if (points.isEmpty) return Rect.zero;
+    double minX = double.infinity, minY = double.infinity;
+    double maxX = 0, maxY = 0;
+    for (final p in points) {
+      minX = math.min(minX, p.dx);
+      minY = math.min(minY, p.dy);
+      maxX = math.max(maxX, p.dx);
+      maxY = math.max(maxY, p.dy);
+    }
+    return Rect.fromLTRB(minX, minY, maxX, maxY);
+  }
+
+  Future<void> _cropAndSend() async {
+    if (_screenshot == null || _cropRect == null) return;
+
+    final viewSize = MediaQuery.sizeOf(context);
+    final completer = Completer<ui.Image>();
+    ui.decodeImageFromList(
+      Uint8List.fromList(_screenshot!),
+      completer.complete,
+    );
+    final image = await completer.future;
+
+    final scaleX = image.width / viewSize.width;
+    final scaleY = image.height / viewSize.height;
+
+    final src = Rect.fromLTWH(
+      _cropRect!.left * scaleX,
+      _cropRect!.top * scaleY,
+      _cropRect!.width * scaleX,
+      _cropRect!.height * scaleY,
+    );
+
+    final destSize = Size(src.width, src.height);
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder, src);
+    canvas.drawImageRect(image, src, Offset.zero & destSize, Paint());
+    final picture = recorder.endRecording();
+    final cropped = await picture.toImage(
+      destSize.width.toInt(),
+      destSize.height.toInt(),
+    );
+    final bytes = await cropped.toByteData(format: ui.ImageByteFormat.png);
+
+    if (bytes != null) {
+      _agent.pendingImage = bytes.buffer.asUint8List();
+    }
+
+    await FlutterOverlayWindow.updateFlag(OverlayFlag.focusPointer);
+    if (mounted) {
+      setState(() => _mode = _OverlayMode.expanded);
+    }
+    _agent.ensureLoaded();
+    if (_input.text.isNotEmpty) {
+      _send();
+    }
+  }
+
   void _send() {
-    final text = _input.text.trim();
+    var text = _input.text.trim();
     if (text.isEmpty) return;
     _input.clear();
-    _agent.send(text);
+
+    if (text.startsWith('/exp')) {
+      text = text.substring(4).trim();
+      if (text.isEmpty) text = 'Describe what is on my screen';
+      _captureAndSend(text);
+      return;
+    }
+
+    _agent.send(text, image: _agent.pendingImage);
+    _agent.pendingImage = null;
+  }
+
+  Future<void> _captureAndSend(String prompt) async {
+    try {
+      final image = await WranglNative.captureScreen();
+      _agent.send(prompt, image: image);
+    } catch (e) {
+      _agent.send('/exp failed: $e');
+    }
   }
 
   // ── build ──────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
+    if (!_autoExpandChecked) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _checkAutoExpand());
+    }
     return Material(
       type: MaterialType.transparency,
-      child: _expanded ? _buildChat(context) : _buildBubble(),
+      child: switch (_mode) {
+        _OverlayMode.collapsed => _buildBubble(),
+        _OverlayMode.selecting => _buildSelector(context),
+        _OverlayMode.expanded => _buildChat(context),
+      },
     );
   }
 
-  // Collapsed: just the floating circle.
   Widget _buildBubble() {
-    return Center(
-      child: GestureDetector(
-        onLongPress: _expand,
-        onTap: _expand,
-        child: Container(
-          width: kBubbleDiameter,
-          height: kBubbleDiameter,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: const Color(0xFF5C5C5C),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.5),
-                blurRadius: 16,
-                spreadRadius: 2,
-              ),
-            ],
-          ),
-          child: Center(
-            child: Container(
-              width: 10,
-              height: 10,
-              decoration: const BoxDecoration(
-                color: _kRed,
-                shape: BoxShape.circle,
-              ),
+    return GestureDetector(
+      onTap: _expand,
+      onLongPress: _expand,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        width: kBubbleWindow,
+        height: kBubbleWindow,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: _kBubbleBlack,
+          border: Border.all(color: _kWhite, width: 2.5),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.5),
+              blurRadius: 12,
+              spreadRadius: 2,
+            ),
+          ],
+        ),
+        child: Center(
+          child: Text(
+            'W',
+            style: TextStyle(
+              color: _kWhite,
+              fontSize: 28,
+              fontWeight: FontWeight.w700,
             ),
           ),
         ),
@@ -258,59 +426,203 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
     );
   }
 
-  // Expanded: chat bubbles + composer floating over the current app — no
-  // scrim, no header, no close button. Tap anywhere outside the bubbles or
-  // the composer to collapse back to the floating circle.
-  Widget _buildChat(BuildContext context) {
-    final insets = MediaQuery.of(context).viewInsets.bottom;
-    final topPad = MediaQuery.of(context).padding.top;
+  Widget _buildSelector(BuildContext context) {
+    final size = MediaQuery.of(context).size;
     return Stack(
       children: [
-        // Invisible tap-outside-to-dismiss target. HitTestBehavior.opaque is
-        // required so the GestureDetector receives taps despite having no
-        // painted background.
+        if (_screenshot != null)
+          Positioned.fill(
+            child: RepaintBoundary(
+              child: Image.memory(
+                _screenshot!,
+                fit: BoxFit.fill,
+                width: size.width,
+                height: size.height,
+              ),
+            ),
+          ),
         Positioned.fill(
           child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: _collapse,
-          ),
-        ),
-
-        // Messages.
-        Positioned.fill(
-          top: topPad + 12,
-          bottom: 78 + insets,
-          child: _agent.error != null && _agent.messages.isEmpty
-              ? _StatusCard(label: _agent.error!, isError: true)
-              : _agent.booting && _agent.messages.isEmpty
-              ? const _StatusCard(label: 'STARTING AGENT…')
-              : ListView.separated(
-                  controller: _scroll,
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                  itemCount: _agent.messages.length,
-                  separatorBuilder: (_, _) => const SizedBox(height: 10),
-                  itemBuilder: (_, i) => _Bubble(_agent.messages[i]),
-                ),
-        ),
-
-        // Composer.
-        Positioned(
-          left: 12,
-          right: 12,
-          bottom: 12 + insets,
-          child: _Composer(
-            controller: _input,
-            onSend: _send,
-            enabled: _agent.ready && !_agent.loading,
-            isLoading: _agent.loading,
+            onPanStart: _onLassoStart,
+            onPanUpdate: _onLassoUpdate,
+            onPanEnd: _onLassoEnd,
+            child: CustomPaint(
+              painter: _LassoPainter(
+                points: _lassoPoints,
+                selectionRect: _cropRect,
+                size: size,
+              ),
+              size: size,
+            ),
           ),
         ),
       ],
     );
   }
+
+  Widget _buildChat(BuildContext context) {
+    final media = MediaQuery.of(context);
+    final insets = media.viewInsets;
+    final pad = media.padding;
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        _collapse();
+      },
+      child: Container(
+        color: Colors.black.withValues(alpha: 0.56),
+        child: AnimatedPadding(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+          padding: EdgeInsets.fromLTRB(
+            16,
+            pad.top + 16,
+            16,
+            pad.bottom + insets.bottom + 16,
+          ),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final panelWidth = math.min(constraints.maxWidth, 340.0);
+              final panelHeight = math.min(constraints.maxHeight, 520.0);
+              return Align(
+                alignment: insets.bottom > 0
+                    ? Alignment.topCenter
+                    : Alignment.center,
+                child: SizedBox(
+                  width: panelWidth,
+                  height: panelHeight,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: _kSolidBg,
+                      borderRadius: BorderRadius.circular(8),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.45),
+                          blurRadius: 22,
+                          spreadRadius: 2,
+                        ),
+                      ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Column(
+                        children: [
+                          _buildChatHeader(),
+                          Expanded(
+                            child:
+                                _agent.error != null && _agent.messages.isEmpty
+                                ? _StatusCard(
+                                    label: _agent.error!,
+                                    isError: true,
+                                  )
+                                : _agent.booting && _agent.messages.isEmpty
+                                ? const _StatusCard(label: 'STARTING AGENT...')
+                                : ListView.separated(
+                                    controller: _scroll,
+                                    padding: const EdgeInsets.fromLTRB(
+                                      16,
+                                      8,
+                                      16,
+                                      8,
+                                    ),
+                                    itemCount: _agent.messages.length,
+                                    separatorBuilder: (_, _) =>
+                                        const SizedBox(height: 10),
+                                    itemBuilder: (_, i) =>
+                                        _Bubble(_agent.messages[i]),
+                                  ),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+                            child: _Composer(
+                              controller: _input,
+                              onSend: _send,
+                              enabled: _agent.ready && !_agent.loading,
+                              isLoading: _agent.loading,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildChatHeader() {
+    return Row(
+      children: [
+        GestureDetector(
+          onTap: _collapse,
+          child: Container(
+            margin: const EdgeInsets.all(4),
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: _kBubbleBlack,
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.keyboard_arrow_down,
+              color: _kWhite,
+              size: 22,
+            ),
+          ),
+        ),
+        const Spacer(),
+      ],
+    );
+  }
 }
 
-// ─── Chat bubble (black, 80% opacity) ─────────────────────────────────────────
+// ─── Lasso painter ────────────────────────────────────────────────────────────
+class _LassoPainter extends CustomPainter {
+  final List<Offset> points;
+  final Rect? selectionRect;
+  final Size size;
+
+  _LassoPainter({
+    required this.points,
+    required this.selectionRect,
+    required this.size,
+  });
+
+  @override
+  void paint(Canvas canvas, Size _) {
+    final overlayPaint = Paint()..color = Colors.black.withValues(alpha: 0.35);
+
+    if (selectionRect != null) {
+      final outer = Path()..addRect(Offset.zero & size);
+      final inner = Path()..addRect(selectionRect!);
+      final clipped = Path.combine(PathOperation.difference, outer, inner);
+      canvas.drawPath(clipped, overlayPaint);
+    } else if (points.length > 1) {
+      canvas.drawRect(Offset.zero & size, overlayPaint);
+    }
+
+    if (points.length > 1) {
+      final path = Path()..addPolygon(points, false);
+      final stroke = Paint()
+        ..color = Colors.white
+        ..strokeWidth = 3
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round;
+      canvas.drawPath(path, stroke);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _LassoPainter old) =>
+      old.points != points || old.selectionRect != selectionRect;
+}
+
+// ─── Chat bubble ──────────────────────────────────────────────────────────────
 class _Bubble extends StatelessWidget {
   final _Msg msg;
   const _Bubble(this.msg);
@@ -386,7 +698,7 @@ class _Composer extends StatelessWidget {
               decoration: InputDecoration(
                 hintText: enabled ? 'Message…' : 'Loading…',
                 hintStyle: TextStyle(
-                  color: _kWhite.withOpacity(0.4),
+                  color: _kWhite.withValues(alpha: 0.4),
                   fontSize: 14,
                   fontWeight: FontWeight.w500,
                 ),
@@ -406,7 +718,7 @@ class _Composer extends StatelessWidget {
               height: 42,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: enabled ? _kWhite : _kWhite.withOpacity(0.3),
+                color: enabled ? _kWhite : _kWhite.withValues(alpha: 0.3),
               ),
               child: isLoading
                   ? const Padding(

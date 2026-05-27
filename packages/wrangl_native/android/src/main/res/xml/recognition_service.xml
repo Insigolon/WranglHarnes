@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Metadata descriptor for WranglRecognitionService — the no-op stub the
+  Voice Interaction XML is required to reference. Empty settingsActivity is
+  fine; there's nothing to configure.
+-->
+<recognition-service
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:settingsActivity="" />

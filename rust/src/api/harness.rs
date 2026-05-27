@@ -5,12 +5,10 @@
 //! Rust owns the stateless decisions a lightweight model gets wrong often
 //! enough to warrant a hardened, testable implementation:
 //!
-//!  - [`parse_output`] — turn a raw model reply into a tool call or final
+//!  - [`parse_output`] — turn a raw model reply into a tool call or a final
 //!    answer, tolerating fences and missing wrappers.
 //!  - [`evaluate`] — run the standing guardrails (format / loop / hallucinated
 //!    tool) and produce a retry prompt on failure.
-//!  - [`route_skill`] — the deterministic slice of skill routing (LLM fallback
-//!    stays in Dart).
 //!  - [`decide_next`] — the inner loop's branching logic: given one model
 //!    turn, what should Dart do next (call a tool, retry, emit a final
 //!    answer, or abort).
@@ -170,52 +168,6 @@ fn evaluate_internal(
             retry_prompt: retry,
         }
     }
-}
-
-// ─── Skill routing (deterministic slice) ───────────────────────────────────────
-
-pub struct SkillDesc {
-    pub name: String,
-    pub description: String,
-}
-
-/// Deterministic fast-path router. Returns the matched skill name, or "none"
-/// to signal that Dart should fall back to an LLM routing call.
-///
-/// Only ever returns a skill that is actually present in `skills`.
-#[flutter_rust_bridge::frb(sync)]
-pub fn route_skill(task: String, skills: Vec<SkillDesc>) -> String {
-    let has = |name: &str| skills.iter().any(|s| s.name == name);
-    let t = task.trim().to_lowercase();
-
-    let starts_any = |prefixes: &[&str]| prefixes.iter().any(|p| t.starts_with(p));
-    let contains_any = |needles: &[&str]| needles.iter().any(|n| t.contains(n));
-
-    if has("apps") && starts_any(&["open ", "launch ", "start ", "go to "]) {
-        return "apps".to_string();
-    }
-    if has("screen")
-        && contains_any(&[
-            "on my screen",
-            "on screen",
-            "what's on",
-            "whats on",
-            "read this",
-            "read the screen",
-            "what does this say",
-            "screenshot",
-            "this page",
-            "look at my screen",
-            "see my screen",
-        ])
-    {
-        return "screen".to_string();
-    }
-    if has("web") && starts_any(&["search ", "google ", "look up ", "find online"]) {
-        return "web".to_string();
-    }
-
-    "none".to_string()
 }
 
 // ─── Inner-loop decision ─────────────────────────────────────────────────────

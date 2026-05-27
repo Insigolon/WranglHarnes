@@ -1,52 +1,53 @@
-import '../skills/skill_loader.dart';
-import 'agent_loop.dart';
-import 'memory.dart';
-import 'model.dart';
-import 'router.dart';
-import 'skill.dart';
+import 'dart:typed_data';
 
-/// Top-level entry point for one user message: route to a skill, load its
-/// memory, run the loop, persist the outcome, return the reply text.
-///
-/// Skills come from `assets/skills/<name>/skill.md` via [loadBundledSkills];
-/// the harness itself never knows the concrete skill list at compile time.
+import '../../core/agent/tool_registry.dart';
+import 'agent_loop.dart';
+import 'model.dart';
+import 'tool.dart';
+
 class WranglHarness {
   final ModelComplete model;
-  final List<Skill> skills;
-  final Skill _fallback;
-  final SkillRouter _router;
+  final List<ToolSpec> tools;
 
-  WranglHarness._(this.model, this.skills, this._fallback)
-      : _router = SkillRouter(model);
+  WranglHarness._(this.model, this.tools);
 
-  static Future<WranglHarness> load(ModelComplete model) async {
-    final skills = await loadBundledSkills();
-    final fallback = skills.firstWhere(
-      (s) => s.name == kFallbackSkillName,
-      orElse: () => skills.first,
-    );
-    return WranglHarness._(model, skills, fallback);
+  static WranglHarness load(ModelComplete model) {
+    return WranglHarness._(model, kToolRegistry.values.toList());
   }
 
   Future<String> handle(
     String task, {
+    Uint8List? image,
     List<Map<String, dynamic>> priorTurns = const [],
   }) async {
-    final skill = await _router.route(task, skills, _fallback);
-
-    final memory = SkillMemory(skill.name);
-    await memory.load();
-
     final loop = AgentLoop(
       model: model,
-      skill: skill,
-      memoryContext: memory.asContext(),
+      tools: tools,
+      systemPrompt: _buildSystemPrompt(),
     );
-    final result = await loop.run(task, priorTurns: priorTurns);
-
-    if (result.status == LoopStatus.ok) {
-      await memory.add(task, result.text);
-    }
+    final result = await loop.run(
+      task,
+      initialImage: image,
+      priorTurns: priorTurns,
+    );
     return result.text;
+  }
+
+  String _buildSystemPrompt() {
+    final b = StringBuffer(
+      'You are Wrangl, a helpful on-device assistant running on the user\'s phone. '
+      'Answer the user directly and concisely.\n\n',
+    );
+    if (tools.isNotEmpty) {
+      b.writeln('To use a tool, reply with ONLY a JSON object:');
+      b.writeln('{"tool": "<name>", "args": { ... }}');
+      b.writeln('\nAvailable tools:');
+      for (final t in tools) {
+        b.writeln('- ${t.name}: ${t.description}');
+      }
+      b.writeln('\nWhen you have the final reply, respond with ONLY:');
+      b.writeln('{"answer": "<text>"}');
+    }
+    return b.toString();
   }
 }

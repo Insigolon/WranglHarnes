@@ -51,9 +51,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
-  List<SkillDesc> dco_decode_list_skill_desc(dynamic raw);
-
-  @protected
   MemoryEntry dco_decode_memory_entry(dynamic raw);
 
   @protected
@@ -64,9 +61,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ParsedOutput dco_decode_parsed_output(dynamic raw);
-
-  @protected
-  SkillDesc dco_decode_skill_desc(dynamic raw);
 
   @protected
   StepDecision dco_decode_step_decision(dynamic raw);
@@ -108,9 +102,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
-  List<SkillDesc> sse_decode_list_skill_desc(SseDeserializer deserializer);
-
-  @protected
   MemoryEntry sse_decode_memory_entry(SseDeserializer deserializer);
 
   @protected
@@ -121,9 +112,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ParsedOutput sse_decode_parsed_output(SseDeserializer deserializer);
-
-  @protected
-  SkillDesc sse_decode_skill_desc(SseDeserializer deserializer);
 
   @protected
   StepDecision sse_decode_step_decision(SseDeserializer deserializer);
@@ -174,12 +162,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_list_skill_desc(
-    List<SkillDesc> self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_memory_entry(MemoryEntry self, SseSerializer serializer);
 
   @protected
@@ -190,9 +172,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_parsed_output(ParsedOutput self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_skill_desc(SkillDesc self, SseSerializer serializer);
 
   @protected
   void sse_encode_step_decision(StepDecision self, SseSerializer serializer);

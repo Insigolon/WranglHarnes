@@ -70,10 +70,7 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
-  assets:
-    - assets/skills/chat/skill.md
-    - assets/skills/apps/skill.md
-    - assets/skills/screen/skill.md
+  assets: []
 
   # To add assets to your application, add an assets section, like this:
   # assets:
