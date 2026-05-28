@@ -1,9 +1,11 @@
+import 'package:wrangl_native/wrangl_native.dart';
+
 class LauncherService {
   Future<List<Map<String, String>>> getInstalledApps() async {
-    return [];
+    return WranglNative.getInstalledApps();
   }
 
   Future<bool> openApp(String packageName) async {
-    return false;
+    return WranglNative.launchApp(packageName);
   }
 }

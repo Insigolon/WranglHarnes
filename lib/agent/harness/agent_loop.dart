@@ -23,6 +23,8 @@ typedef DecideNextFn = rust.StepDecision Function({
   required int maxRetries,
 });
 
+typedef StepCallback = void Function(AgentStep step);
+
 class AgentLoop {
   final ModelComplete model;
   final List<ToolSpec> tools;
@@ -30,6 +32,8 @@ class AgentLoop {
   final int maxIterations;
   final int maxRetries;
   final DecideNextFn decideNext;
+  final StepCallback? onStep;
+  final CancellationToken cancelToken;
 
   AgentLoop({
     required this.model,
@@ -38,7 +42,10 @@ class AgentLoop {
     this.maxIterations = 8,
     this.maxRetries = 3,
     DecideNextFn? decideNext,
-  }) : decideNext = decideNext ?? rust.decideNext;
+    this.onStep,
+    CancellationToken? cancelToken,
+  })  : decideNext = decideNext ?? rust.decideNext,
+        cancelToken = cancelToken ?? CancellationToken.none;
 
   Future<LoopResult> run(
     String task, {
@@ -55,6 +62,10 @@ class AgentLoop {
     Uint8List? pendingImage = initialImage;
 
     for (var i = 0; i < maxIterations; i++) {
+      if (cancelToken.isCancelled) {
+        return LoopResult(LoopStatus.partial, 'Cancelled');
+      }
+
       final raw = await model(
         system: systemPrompt,
         history: history,
@@ -96,8 +107,29 @@ class AgentLoop {
 
         case rust.DecisionAction.callTool:
           logAssistantTurn();
+
+          final toolSpec = _findTool(d.toolName);
+          final step = AgentStep(
+            toolName: d.toolName!,
+            label: toolSpec?.stepLabel ?? d.toolName!,
+            status: StepStatus.running,
+            startedAt: DateTime.now(),
+          );
+          onStep?.call(step);
+
           final args = _decodeArgs(d.toolArgsJson);
           final result = await runTool(tools, d.toolName!, args);
+
+          final resultStep = AgentStep(
+            toolName: d.toolName!,
+            label: toolSpec?.stepLabel ?? d.toolName!,
+            status: result.text.startsWith('ERROR:')
+                ? StepStatus.failed
+                : StepStatus.completed,
+            startedAt: step.startedAt,
+          );
+          onStep?.call(resultStep);
+
           if (result.kind == ToolResultKind.image && result.image != null) {
             history.add({
               'role': 'tool',
@@ -114,6 +146,14 @@ class AgentLoop {
       LoopStatus.maxIterations,
       "I'm having trouble. Try rephrasing that.",
     );
+  }
+
+  ToolSpec? _findTool(String? name) {
+    if (name == null) return null;
+    for (final t in tools) {
+      if (t.name == name) return t;
+    }
+    return null;
   }
 
   Map<String, dynamic> _decodeArgs(String? argsJson) {

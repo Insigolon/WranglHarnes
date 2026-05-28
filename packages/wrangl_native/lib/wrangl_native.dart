@@ -52,4 +52,58 @@ class WranglNative {
       _assistCh.receiveBroadcastStream().map(
             (e) => Map<String, dynamic>.from(e as Map),
           );
+
+  // ── File search (MediaStore) ─────────────────────────────────────────────────
+
+  /// Search device files by name and/or MIME type category.
+  /// [mimeType] accepts: "image", "video", "audio", "document", or a raw MIME prefix.
+  /// Returns up to 50 matches sorted by most recently modified.
+  static Future<List<Map<String, dynamic>>> scanFiles({
+    String? query,
+    String? mimeType,
+  }) async {
+    final args = <String, dynamic>{};
+    if (query != null) args['query'] = query;
+    if (mimeType != null) args['mimeType'] = mimeType;
+    final raw = await _ch.invokeListMethod<Map>('scanFiles', args) ?? [];
+    return raw.cast<Map<String, dynamic>>();
+  }
+
+  // ── Settings deep-links ─────────────────────────────────────────────────────
+
+  /// Open a system settings panel by key (e.g. "wifi", "bluetooth", "display").
+  /// Returns true if the intent was launched successfully.
+  static Future<bool> openSetting(String key) async {
+    return await _ch.invokeMethod<bool>(
+          'openSetting',
+          {'key': key},
+        ) ??
+        false;
+  }
+
+  // ── SMS reading (requires READ_SMS permission) ─────────────────────────────
+
+  /// Read recent SMS messages from the inbox.
+  /// [limit] max messages to return (default 20, max 100).
+  /// Throws on permission denied or read failure.
+  static Future<List<Map<String, dynamic>>> readSms({int limit = 20}) async {
+    final raw = await _ch.invokeListMethod<Map>(
+          'readSms',
+          {'limit': limit},
+        ) ??
+        [];
+    return raw.cast<Map<String, dynamic>>();
+  }
+
+  /// Opens the system file/image picker from the main activity context.
+  /// Returns a map with `name` (String) and `bytes` (Uint8List) of the selected file,
+  /// or null if the selection was cancelled.
+  static Future<Map<String, dynamic>?> pickFile() async {
+    try {
+      final raw = await _ch.invokeMapMethod<String, dynamic>('pickFile');
+      return raw;
+    } catch (e) {
+      return null;
+    }
+  }
 }

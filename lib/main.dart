@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
@@ -30,12 +31,11 @@ class _OverlayPermission {
 class _AppLauncher {
   static Future<List<AppEntry>> getInstalledApps() async {
     final raw = await WranglNative.getInstalledApps();
-    return raw
-        .map((m) => AppEntry(m['packageName']!, m['label']!))
-        .toList();
+    return raw.map((m) => AppEntry(m['packageName']!, m['label']!)).toList();
   }
 
-  static Future<void> openApp(String packageName) => WranglNative.launchApp(packageName);
+  static Future<void> openApp(String packageName) =>
+      WranglNative.launchApp(packageName);
 }
 
 void main() async {
@@ -54,8 +54,8 @@ void main() async {
   // isolate only needs to know whether it has already been downloaded.
   final path = await ModelConfig.path();
   final file = File(path);
-      final modelReady = await file.exists() &&
-          await file.length() > ModelConfig.minSize;
+  final modelReady =
+      await file.exists() && await file.length() > ModelConfig.minSize;
 
   runApp(MyApp(modelReady: modelReady));
 }
@@ -157,9 +157,9 @@ class _RadialLauncherState extends State<RadialLauncher>
     if (mounted) setState(() => _apps = entries);
   }
 
-  // ── overlay activation ──────────────────────────────────
+  // ── voice input → overlay with recording ───────────────
 
-  Future<void> _openOverlay() async {
+  Future<void> _startVoiceInput() async {
     final granted = await _OverlayPermission.isGranted();
     if (!granted) {
       final afterGrant = await _OverlayPermission.request();
@@ -168,18 +168,41 @@ class _RadialLauncherState extends State<RadialLauncher>
         return;
       }
     }
+    await _openOverlay(startVoice: true);
+  }
+
+  // ── overlay activation ──────────────────────────────────
+
+  Future<void> _openOverlay({
+    String? prefilledText,
+    bool startVoice = false,
+  }) async {
     final view = WidgetsBinding.instance.platformDispatcher.views.first;
-    final fs = view.physicalSize / view.devicePixelRatio;
+    final screenW =
+        (view.physicalSize.width / view.devicePixelRatio).round();
     try {
       await FlutterOverlayWindow.showOverlay(
-        height: fs.height.toInt(),
-        width: fs.width.toInt(),
-        alignment: OverlayAlignment.center,
+        height: 200,
+        width: screenW,
+        alignment: OverlayAlignment.topCenter,
         flag: OverlayFlag.focusPointer,
-        enableDrag: false,
+        enableDrag: true,
+        positionGravity: PositionGravity.none,
+        startPosition: OverlayPosition(0, 50),
         overlayTitle: 'Wrangl',
         overlayContent: 'Chat with Gemma',
       );
+      final data = <String, dynamic>{};
+      if (prefilledText != null && prefilledText.isNotEmpty) {
+        data['voiceText'] = prefilledText;
+      }
+      if (startVoice) {
+        data['startVoice'] = true;
+      }
+      if (data.isNotEmpty) {
+        await Future.delayed(const Duration(milliseconds: 600));
+        await FlutterOverlayWindow.shareData(jsonEncode(data));
+      }
     } catch (e) {
       debugPrint('[overlay] launch failed: $e');
     }
@@ -190,8 +213,10 @@ class _RadialLauncherState extends State<RadialLauncher>
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1A1A1A),
-        title: const Text('Overlay Permission Needed',
-            style: TextStyle(color: Color(0xFFF0EFEB))),
+        title: const Text(
+          'Overlay Permission Needed',
+          style: TextStyle(color: Color(0xFFF0EFEB)),
+        ),
         content: const Text(
           'Wrangl needs "Display over other apps" to show the chat '
           'overlay. Please enable it in Settings → Display over other apps.',
@@ -323,59 +348,63 @@ class _RadialLauncherState extends State<RadialLauncher>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-        backgroundColor: const Color(0xFF0D0D0D),
-        resizeToAvoidBottomInset: false,
-        body: LayoutBuilder(
-          builder: (_, c) {
-            final anchor = _computeAnchor(c);
-            return Stack(
-              clipBehavior: Clip.none,
-              children: [
-                // ── radial launcher ──────────────────────────────────
-                GestureDetector(
-                  onDoubleTap: _toggle,
-                  onPanStart: (d) => _panStart(d, anchor),
-                  onPanUpdate: (d) => _pan(d, anchor),
-                  onPanEnd: _panEnd,
-                  onTapDown: (d) => _tap(d, anchor),
-                  onTap: () {
-                    if (_open && _selSlot != null) _launchSelected();
-                  },
-                  child: Stack(
-                    clipBehavior: Clip.none,
-                    children: [
-                      Positioned.fill(
-                        child: FadeTransition(
-                          opacity: _anim,
-                          child: RepaintBoundary(
-                            child: CustomPaint(
-                              painter: _Painter(
-                                anchor: anchor,
-                                apps: _apps,
-                                offset: _offset,
-                                selectedSlot: _selSlot,
+      backgroundColor: const Color(0xFF0D0D0D),
+      resizeToAvoidBottomInset: false,
+      body: Stack(
+        children: [
+          LayoutBuilder(
+            builder: (_, c) {
+              final anchor = _computeAnchor(c);
+              return Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  // ── radial launcher ──────────────────────────────────
+                  GestureDetector(
+                    onDoubleTap: _toggle,
+                    onPanStart: (d) => _panStart(d, anchor),
+                    onPanUpdate: (d) => _pan(d, anchor),
+                    onPanEnd: _panEnd,
+                    onTapDown: (d) => _tap(d, anchor),
+                    onTap: () {
+                      if (_open && _selSlot != null) _launchSelected();
+                    },
+                    child: Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        Positioned.fill(
+                          child: FadeTransition(
+                            opacity: _anim,
+                            child: RepaintBoundary(
+                              child: CustomPaint(
+                                painter: _Painter(
+                                  anchor: anchor,
+                                  apps: _apps,
+                                  offset: _offset,
+                                  selectedSlot: _selSlot,
+                                ),
+                                child: const SizedBox.expand(),
                               ),
-                              child: const SizedBox.expand(),
                             ),
                           ),
                         ),
-                      ),
-                      Positioned(
-                        left: anchor.dx - _kHubR,
-                        top: anchor.dy - _kHubR,
-                        child: GestureDetector(
-                          onDoubleTap: _toggle,
-                          onLongPress: _openOverlay,
-                          child: const _Hub(key: ValueKey('launcher-hub')),
+                        Positioned(
+                          left: anchor.dx - _kHubR,
+                          top: anchor.dy - _kHubR,
+                          child: GestureDetector(
+                            onDoubleTap: _toggle,
+                            onLongPress: _startVoiceInput,
+                            child: const _Hub(key: ValueKey('launcher-hub')),
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
-              ],
-            );
-          },
-        ),
+                ],
+              );
+            },
+          ),
+        ],
+      ),
     );
   }
 }

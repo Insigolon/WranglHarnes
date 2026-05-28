@@ -12,6 +12,7 @@ class WranglHarness {
   WranglHarness._(this.model, this.tools);
 
   static WranglHarness load(ModelComplete model) {
+    setModelForTools(model);
     return WranglHarness._(model, kToolRegistry.values.toList());
   }
 
@@ -19,11 +20,16 @@ class WranglHarness {
     String task, {
     Uint8List? image,
     List<Map<String, dynamic>> priorTurns = const [],
+    StepCallback? onStep,
+    CancellationToken? cancelToken,
   }) async {
     final loop = AgentLoop(
       model: model,
       tools: tools,
       systemPrompt: _buildSystemPrompt(),
+      maxIterations: 10,
+      onStep: onStep,
+      cancelToken: cancelToken,
     );
     final result = await loop.run(
       task,
@@ -36,7 +42,8 @@ class WranglHarness {
   String _buildSystemPrompt() {
     final b = StringBuffer(
       'You are Wrangl, a helpful on-device assistant running on the user\'s phone. '
-      'Answer the user directly and concisely.\n\n',
+      'Answer the user directly and concisely.\n'
+      'Before answering, reason step-by-step inside <think>...</think> tags.\n\n',
     );
     if (tools.isNotEmpty) {
       b.writeln('To use a tool, reply with ONLY a JSON object:');

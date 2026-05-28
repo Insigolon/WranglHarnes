@@ -76,6 +76,9 @@ class GemmaModelClient {
     }
 
     final response = await chat.generateChatResponse();
+    try {
+      await chat.session.close();
+    } catch (_) {}
     if (response is TextResponse) return response.token;
     return response.toString();
   }

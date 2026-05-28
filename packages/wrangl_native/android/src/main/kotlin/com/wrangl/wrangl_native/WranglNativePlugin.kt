@@ -10,9 +10,13 @@ import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.provider.MediaStore
+import android.provider.Settings
+import android.provider.Telephony
 import android.util.DisplayMetrics
 import android.view.WindowManager
 
@@ -46,6 +50,31 @@ class WranglNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
         private const val CAPTURE_QUALITY = 80
         private const val CAPTURE_MAX_EDGE = 768
         private const val REQUEST_MEDIA_PROJECTION = 1002
+        private const val REQUEST_PICK_FILE = 1003
+
+        // Intent actions for system settings panels.
+        private val SETTINGS_ACTIONS = mapOf(
+            "wifi" to Settings.ACTION_WIFI_SETTINGS,
+            "bluetooth" to Settings.ACTION_BLUETOOTH_SETTINGS,
+            "mobile_data" to Settings.ACTION_DATA_ROAMING_SETTINGS,
+            "airplane_mode" to Settings.ACTION_AIRPLANE_MODE_SETTINGS,
+            "display" to Settings.ACTION_DISPLAY_SETTINGS,
+            "sound" to Settings.ACTION_SOUND_SETTINGS,
+            "notification" to Settings.ACTION_APP_NOTIFICATION_SETTINGS,
+            "battery" to Settings.ACTION_BATTERY_SAVER_SETTINGS,
+            "storage" to Settings.ACTION_INTERNAL_STORAGE_SETTINGS,
+            "location" to Settings.ACTION_LOCATION_SOURCE_SETTINGS,
+            "security" to Settings.ACTION_SECURITY_SETTINGS,
+            "apps" to Settings.ACTION_APPLICATION_SETTINGS,
+            "language_input" to Settings.ACTION_INPUT_METHOD_SETTINGS,
+            "accessibility" to Settings.ACTION_ACCESSIBILITY_SETTINGS,
+            "about_phone" to Settings.ACTION_DEVICE_INFO_SETTINGS,
+            "date_time" to Settings.ACTION_DATE_SETTINGS,
+            "developer_options" to Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS,
+            "hotspot" to Settings.ACTION_WIFI_SETTINGS,
+            "vpn" to Settings.ACTION_VPN_SETTINGS,
+            "wallpaper" to Settings.ACTION_DISPLAY_SETTINGS,
+        )
 
         // All currently-subscribed EventChannel sinks across every Flutter
         // engine in this process.
@@ -55,6 +84,7 @@ class WranglNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
         // Process-wide MediaProjection (valid until the service is destroyed).
         private var mediaProjection: MediaProjection? = null
         private var consentPendingResult: MethodChannel.Result? = null
+        private var pickFilePendingResult: MethodChannel.Result? = null
 
         // Activity from the launcher engine (the only one that can show the
         // consent dialog). Shared via companion so the overlay isolate's plugin
@@ -134,6 +164,9 @@ class WranglNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
             if (requestCode == REQUEST_MEDIA_PROJECTION) {
                 onMediaProjectionResult(resultCode, data)
                 true
+            } else if (requestCode == REQUEST_PICK_FILE) {
+                onPickFileResult(resultCode, data)
+                true
             } else {
                 false
             }
@@ -159,6 +192,20 @@ class WranglNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
             "getInstalledApps" -> getInstalledApps(result)
             "launchApp" -> launchApp(call.argument<String>("packageName"), result)
             "captureScreen" -> captureScreen(result)
+            "pickFile" -> pickFile(result)
+            "scanFiles" -> scanFiles(
+                call.argument<String>("query"),
+                call.argument<String>("mimeType"),
+                result,
+            )
+            "openSetting" -> openSetting(
+                call.argument<String>("key"),
+                result,
+            )
+            "readSms" -> readSms(
+                (call.argument<Int>("limit") ?: 20).coerceIn(1, 100),
+                result,
+            )
             else -> result.notImplemented()
         }
     }
@@ -319,5 +366,215 @@ class WranglNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
         bmp.compress(Bitmap.CompressFormat.JPEG, CAPTURE_QUALITY, out)
         bmp.recycle()
         return out.toByteArray()
+    }
+
+    private fun pickFile(result: MethodChannel.Result) {
+        val act = mainActivity
+        if (act == null) {
+            result.error("NO_ACTIVITY", "No activity to show file picker", null)
+            return
+        }
+        pickFilePendingResult = result
+        val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+            type = "*/*"
+            addCategory(Intent.CATEGORY_OPENABLE)
+        }
+        act.startActivityForResult(Intent.createChooser(intent, "Select File"), REQUEST_PICK_FILE)
+    }
+
+    private fun onPickFileResult(resultCode: Int, data: Intent?) {
+        val result = pickFilePendingResult
+        pickFilePendingResult = null
+        if (result == null) return
+        if (resultCode != Activity.RESULT_OK || data == null || data.data == null) {
+            result.error("CANCELLED", "File picking cancelled", null)
+            return
+        }
+        val uri = data.data!!
+        try {
+            val inputStream = appContext.contentResolver.openInputStream(uri)
+            val bytes = inputStream?.readBytes()
+            if (bytes != null) {
+                var name = "file"
+                val cursor = appContext.contentResolver.query(uri, null, null, null, null)
+                cursor?.use {
+                    if (it.moveToFirst()) {
+                        val nameIndex = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                        if (nameIndex != -1) {
+                            name = it.getString(nameIndex)
+                        }
+                    }
+                }
+                result.success(mapOf(
+                    "name" to name,
+                    "bytes" to bytes
+                ))
+            } else {
+                result.error("READ_FAILED", "Could not read file data", null)
+            }
+        } catch (e: Exception) {
+            result.error("ERROR", e.message, null)
+        }
+    }
+
+    // ── MediaStore file search ──────────────────────────────────────────────────
+
+    private fun scanFiles(query: String?, mimeType: String?, result: MethodChannel.Result) {
+        try {
+            val uri = MediaStore.Files.getContentUri("external")
+            val projections = arrayOf(
+                MediaStore.Files.FileColumns._ID,
+                MediaStore.Files.FileColumns.DISPLAY_NAME,
+                MediaStore.Files.FileColumns.DATA,
+                MediaStore.Files.FileColumns.SIZE,
+                MediaStore.Files.FileColumns.MIME_TYPE,
+            )
+
+            val sel = StringBuilder()
+            val selArgs = mutableListOf<String>()
+
+            if (!query.isNullOrBlank()) {
+                sel.append("${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ?")
+                selArgs.add("%${query.trim()}%")
+            }
+
+            if (!mimeType.isNullOrBlank()) {
+                if (sel.isNotEmpty()) sel.append(" AND ")
+                when (mimeType.trim().lowercase()) {
+                    "image" -> {
+                        sel.append("${MediaStore.Files.FileColumns.MIME_TYPE} LIKE ?")
+                        selArgs.add("image/%")
+                    }
+                    "video" -> {
+                        sel.append("${MediaStore.Files.FileColumns.MIME_TYPE} LIKE ?")
+                        selArgs.add("video/%")
+                    }
+                    "audio" -> {
+                        sel.append("${MediaStore.Files.FileColumns.MIME_TYPE} LIKE ?")
+                        selArgs.add("audio/%")
+                    }
+                    "document" -> {
+                        sel.append("(${MediaStore.Files.FileColumns.MIME_TYPE} IN (?, ?, ?, ?))")
+                        selArgs.addAll(listOf("text/plain", "text/csv", "text/markdown", "application/pdf"))
+                    }
+                    else -> {
+                        sel.append("${MediaStore.Files.FileColumns.MIME_TYPE} LIKE ?")
+                        selArgs.add("${mimeType.trim()}/%")
+                    }
+                }
+            }
+
+            val cursor = appContext.contentResolver.query(
+                uri,
+                projections,
+                sel.toString().ifEmpty { null },
+                selArgs.toTypedArray().ifEmpty { null },
+                "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC",
+            )
+
+            val files = mutableListOf<Map<String, Any>>()
+            cursor?.use { c ->
+                val nameIdx = c.getColumnIndex(MediaStore.Files.FileColumns.DISPLAY_NAME)
+                val dataIdx = c.getColumnIndex(MediaStore.Files.FileColumns.DATA)
+                val sizeIdx = c.getColumnIndex(MediaStore.Files.FileColumns.SIZE)
+                val mimeIdx = c.getColumnIndex(MediaStore.Files.FileColumns.MIME_TYPE)
+
+                var count = 0
+                while (c.moveToNext() && count < 50) {
+                    val name = if (nameIdx >= 0) c.getString(nameIdx) ?: "unknown" else "unknown"
+                    val path = if (dataIdx >= 0) c.getString(dataIdx) ?: "" else ""
+                    val size = if (sizeIdx >= 0) c.getLong(sizeIdx) else 0L
+                    val mime = if (mimeIdx >= 0) c.getString(mimeIdx) ?: "" else ""
+                    files.add(
+                        mapOf(
+                            "name" to name,
+                            "path" to path,
+                            "size" to size,
+                            "mimeType" to mime,
+                        ),
+                    )
+                    count++
+                }
+            }
+
+            result.success(files)
+        } catch (e: Exception) {
+            result.error("SCAN_FAILED", e.message, null)
+        }
+    }
+
+    // ── Settings deep-links ─────────────────────────────────────────────────────
+
+    private fun openSetting(key: String?, result: MethodChannel.Result) {
+        if (key == null) {
+            result.error("INVALID", "key required", null)
+            return
+        }
+        val action = SETTINGS_ACTIONS[key.trim().lowercase()]
+            ?: Settings.ACTION_SETTINGS
+        try {
+            val intent = Intent(action).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            appContext.startActivity(intent)
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("LAUNCH_FAILED", e.message, null)
+        }
+    }
+
+    // ── SMS reading (requires READ_SMS) ─────────────────────────────────────────
+
+    private fun readSms(limit: Int, result: MethodChannel.Result) {
+        try {
+            val uri = Telephony.Sms.Inbox.CONTENT_URI
+            val projections = arrayOf(
+                Telephony.Sms.Inbox._ID,
+                Telephony.Sms.Inbox.ADDRESS,
+                Telephony.Sms.Inbox.BODY,
+                Telephony.Sms.Inbox.DATE_SENT,
+                Telephony.Sms.Inbox.THREAD_ID,
+            )
+            val cursor = appContext.contentResolver.query(
+                uri,
+                projections,
+                null,
+                null,
+                "${Telephony.Sms.Inbox.DATE} DESC",
+            )
+
+            val messages = mutableListOf<Map<String, Any>>()
+            cursor?.use { c ->
+                val addrIdx = c.getColumnIndex(Telephony.Sms.Inbox.ADDRESS)
+                val bodyIdx = c.getColumnIndex(Telephony.Sms.Inbox.BODY)
+                val dateIdx = c.getColumnIndex(Telephony.Sms.Inbox.DATE_SENT)
+
+                var count = 0
+                while (c.moveToNext() && count < limit) {
+                    val sender = if (addrIdx >= 0) c.getString(addrIdx) ?: "unknown" else "unknown"
+                    val body = if (bodyIdx >= 0) c.getString(bodyIdx) ?: "" else ""
+                    val date = if (dateIdx >= 0) c.getLong(dateIdx) else 0L
+                    messages.add(
+                        mapOf(
+                            "sender" to sender,
+                            "body" to body,
+                            "timestamp" to date,
+                        ),
+                    )
+                    count++
+                }
+            }
+
+            result.success(messages)
+        } catch (e: SecurityException) {
+            // READ_SMS not granted (common on API 34+ when not default SMS app).
+            result.error(
+                "PERMISSION_DENIED",
+                "Wrangl is not the default SMS app. To enable, go to Settings > Apps > Default apps > SMS app",
+                null,
+            )
+        } catch (e: Exception) {
+            result.error("SMS_READ_FAILED", e.message, null)
+        }
     }
 }

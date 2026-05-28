@@ -25,10 +25,47 @@ class ToolSpec {
   final String name;
   final String description;
   final ToolFn run;
+  final String? stepLabel;
 
   const ToolSpec({
     required this.name,
     required this.description,
     required this.run,
+    this.stepLabel,
   });
+}
+
+// ─── Agent step tracking ─────────────────────────────────────────────────────
+
+enum StepStatus { running, completed, failed }
+
+class AgentStep {
+  final String toolName;
+  final String label;
+  final StepStatus status;
+  final DateTime startedAt;
+
+  const AgentStep({
+    required this.toolName,
+    required this.label,
+    required this.status,
+    required this.startedAt,
+  });
+}
+
+/// A cooperative cancellation token checked by the agent loop at each
+/// iteration boundary. When [isCancelled] turns true the loop breaks and
+/// returns whatever partial result it has.
+class CancellationToken {
+  bool _cancelled = false;
+
+  void cancel() => _cancelled = true;
+
+  bool get isCancelled => _cancelled;
+
+  static final CancellationToken none = CancellationToken._internal();
+
+  CancellationToken._internal();
+
+  CancellationToken();
 }
