@@ -1,7 +1,7 @@
 import 'package:wrangl_native/wrangl_native.dart';
 
 class LauncherService {
-  Future<List<Map<String, String>>> getInstalledApps() async {
+  Future<List<Map<String, dynamic>>> getInstalledApps() async {
     return WranglNative.getInstalledApps();
   }
 

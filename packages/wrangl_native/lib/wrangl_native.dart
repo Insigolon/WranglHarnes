@@ -12,15 +12,11 @@ class WranglNative {
 
   // ── App launching ──────────────────────────────────────────────────────────
 
-  /// All launchable apps as `{packageName, label}` maps, sorted by label.
-  static Future<List<Map<String, String>>> getInstalledApps() async {
+  /// All launchable apps. Each map has `packageName` (String), `label` (String),
+  /// and `icon` (Uint8List? — PNG bytes, may be null).
+  static Future<List<Map<String, dynamic>>> getInstalledApps() async {
     final raw = await _ch.invokeListMethod<Map>('getInstalledApps') ?? [];
-    return raw
-        .map((m) => {
-              'packageName': m['packageName'] as String,
-              'label': m['label'] as String,
-            })
-        .toList();
+    return raw.map((m) => Map<String, dynamic>.from(m)).toList();
   }
 
   /// Launch an app by package name. Returns false if it has no launch intent.

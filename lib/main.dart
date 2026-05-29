@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
@@ -35,7 +36,15 @@ class _OverlayPermission {
 class _AppLauncher {
   static Future<List<AppEntry>> getInstalledApps() async {
     final raw = await WranglNative.getInstalledApps();
-    return raw.map((m) => AppEntry(m['packageName']!, m['label']!)).toList();
+    return raw
+        .map(
+          (m) => AppEntry(
+            m['packageName'] as String,
+            m['label'] as String,
+            icon: m['icon'] as Uint8List?,
+          ),
+        )
+        .toList();
   }
 
   static Future<void> openApp(String packageName) =>
@@ -94,14 +103,35 @@ class MyApp extends StatelessWidget {
 
 class AppEntry {
   final String packageName, label;
-  const AppEntry(this.packageName, this.label);
+  final Uint8List? icon;
+  const AppEntry(this.packageName, this.label, {this.icon});
 }
 
 class FolderEntry {
   final String name;
   final List<String> packageNames;
-  const FolderEntry(this.name, this.packageNames);
+  final int iconIndex;
+  const FolderEntry(this.name, this.packageNames, {this.iconIndex = 0});
 }
+
+const List<IconData> _folderIcons = [
+  Icons.folder,
+  Icons.folder_special,
+  Icons.people,
+  Icons.sports_esports,
+  Icons.work,
+  Icons.music_note,
+  Icons.photo_library,
+  Icons.videocam,
+  Icons.settings,
+  Icons.shopping_cart,
+  Icons.school,
+  Icons.favorite,
+  Icons.home,
+  Icons.person,
+  Icons.public,
+  Icons.flag,
+];
 
 // ─── Launcher constants ──────────────────────────────────────────────────────
 const double _kArcStart = 160.0;
@@ -110,7 +140,7 @@ const double _kLauncherScale = 1.28;
 const double _kLabelScale = 1.55;
 const double _kHubR = 46.0 * _kLauncherScale;
 const double _kInnerR = 72.0 * _kLauncherScale;
-const double _kOuterR = 148.0 * _kLauncherScale;
+const double _kOuterR = 175.0 * _kLauncherScale;
 const double _kCornerInset = 12.0 * _kLauncherScale;
 const double _kButtonSweep = 18.0;
 const double _kMenuStart = _kArcStart + _kButtonSweep;
@@ -146,11 +176,14 @@ class _RadialLauncherState extends State<RadialLauncher>
   int _offset = 0;
   List<AppEntry> _apps = const [];
   List<FolderEntry> _folders = const [];
+  final Map<String, ui.Image> _appIconImages = {};
   final Stopwatch _pageStopwatch = Stopwatch()..start();
 
   List<Object> get _displayItems {
     final inFolders = _folders.expand((f) => f.packageNames).toSet();
-    final unassigned = _apps.where((a) => !inFolders.contains(a.packageName)).toList();
+    final unassigned = _apps
+        .where((a) => !inFolders.contains(a.packageName))
+        .toList();
     return [..._folders, ...unassigned];
   }
 
@@ -188,7 +221,22 @@ class _RadialLauncherState extends State<RadialLauncher>
 
   Future<void> _loadApps() async {
     final entries = await _AppLauncher.getInstalledApps();
-    if (mounted) setState(() => _apps = entries);
+    if (!mounted) return;
+    setState(() => _apps = entries);
+    _loadAppIcons();
+  }
+
+  Future<void> _loadAppIcons() async {
+    final images = <String, ui.Image>{};
+    for (final app in _apps) {
+      if (app.icon == null || app.icon!.isEmpty) continue;
+      try {
+        final codec = await ui.instantiateImageCodec(app.icon!);
+        final frame = await codec.getNextFrame();
+        images[app.packageName] = frame.image;
+      } catch (_) {}
+    }
+    if (mounted) setState(() => _appIconImages..addAll(images));
   }
 
   Future<File> get _foldersFile async {
@@ -203,10 +251,14 @@ class _RadialLauncherState extends State<RadialLauncher>
         final json = jsonDecode(await file.readAsString()) as List;
         if (mounted) {
           setState(() {
-            _folders = json.map((e) => FolderEntry(
-              e['name'] as String,
-              (e['packageNames'] as List).cast<String>(),
-            )).toList();
+            _folders = json
+                .map(
+                  (e) => FolderEntry(
+                    e['name'] as String,
+                    (e['packageNames'] as List).cast<String>(),
+                  ),
+                )
+                .toList();
           });
         }
       }
@@ -217,10 +269,11 @@ class _RadialLauncherState extends State<RadialLauncher>
 
   Future<void> _saveFolders() async {
     final file = await _foldersFile;
-    final json = jsonEncode(_folders.map((f) => {
-      'name': f.name,
-      'packageNames': f.packageNames,
-    }).toList());
+    final json = jsonEncode(
+      _folders
+          .map((f) => {'name': f.name, 'packageNames': f.packageNames})
+          .toList(),
+    );
     await file.writeAsString(json);
   }
 
@@ -494,6 +547,8 @@ class _RadialLauncherState extends State<RadialLauncher>
                                     items: _displayItems,
                                     offset: _offset,
                                     selectedSlot: _selSlot,
+                                    appIconImages: _appIconImages,
+                                    folderIconsList: _folderIcons,
                                   ),
                                   child: const SizedBox.expand(),
                                 ),
@@ -714,7 +769,9 @@ class _RadialLauncherState extends State<RadialLauncher>
 
   void _showFolderPopup(FolderEntry folder) {
     final pkgSet = folder.packageNames.toSet();
-    final resolved = _apps.where((a) => pkgSet.contains(a.packageName)).toList();
+    final resolved = _apps
+        .where((a) => pkgSet.contains(a.packageName))
+        .toList();
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -722,9 +779,21 @@ class _RadialLauncherState extends State<RadialLauncher>
         shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.all(Radius.circular(16)),
         ),
-        title: Text(
-          folder.name,
-          style: const TextStyle(color: Color(0xFFF0EFEB), fontSize: 18),
+        title: Row(
+          children: [
+            Icon(
+              _folderIcons[folder.iconIndex.clamp(0, _folderIcons.length - 1)],
+              color: const Color(0xFFF0EFEB),
+              size: 22,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                folder.name,
+                style: const TextStyle(color: Color(0xFFF0EFEB), fontSize: 18),
+              ),
+            ),
+          ],
         ),
         content: SizedBox(
           width: double.maxFinite,
@@ -741,12 +810,30 @@ class _RadialLauncherState extends State<RadialLauncher>
               : ListView.separated(
                   shrinkWrap: true,
                   itemCount: resolved.length,
-                  separatorBuilder: (_, _) => const Divider(
-                    color: Color(0xFF333333),
-                    height: 1,
-                  ),
+                  separatorBuilder: (_, _) =>
+                      const Divider(color: Color(0xFF333333), height: 1),
                   itemBuilder: (_, i) => ListTile(
                     dense: true,
+                    leading: resolved[i].icon != null
+                        ? ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: Image.memory(
+                              resolved[i].icon!,
+                              width: 28,
+                              height: 28,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) => const Icon(
+                                Icons.apps,
+                                size: 24,
+                                color: Color(0xFF888888),
+                              ),
+                            ),
+                          )
+                        : const Icon(
+                            Icons.apps,
+                            size: 24,
+                            color: Color(0xFF888888),
+                          ),
                     title: Text(
                       resolved[i].label,
                       style: const TextStyle(
@@ -825,12 +912,92 @@ class _RadialLauncherState extends State<RadialLauncher>
       ),
     );
     if (name == null || name.isEmpty || !mounted) return;
+    final iconIdx = await _pickFolderIcon(null);
+    if (iconIdx == null || !mounted) return;
     final pkgs = await _pickFolderApps(const []);
     if (pkgs == null || !mounted) return;
     setState(() {
-      _folders = [..._folders, FolderEntry(name, pkgs)];
+      _folders = [..._folders, FolderEntry(name, pkgs, iconIndex: iconIdx)];
     });
     _saveFolders();
+  }
+
+  /// Shows a grid of preset folder icons. Returns the selected index or null if cancelled.
+  /// [initial] is the currently selected index, or null for no selection.
+  Future<int?> _pickFolderIcon(int? initial) async {
+    return showDialog<int>(
+      context: context,
+      builder: (ctx) {
+        var sel = initial;
+        return StatefulBuilder(
+          builder: (ctx, setInner) => AlertDialog(
+            backgroundColor: const Color(0xFF1A1A1A),
+            shape: const RoundedRectangleBorder(
+              borderRadius: BorderRadius.all(Radius.circular(16)),
+            ),
+            title: const Text(
+              'Choose Folder Icon',
+              style: TextStyle(color: Color(0xFFF0EFEB)),
+            ),
+            content: SizedBox(
+              width: 280,
+              height: 300,
+              child: GridView.builder(
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 4,
+                  crossAxisSpacing: 8,
+                  mainAxisSpacing: 8,
+                ),
+                itemCount: _folderIcons.length,
+                itemBuilder: (_, i) {
+                  final selected = sel == i;
+                  return GestureDetector(
+                    onTap: () => setInner(() => sel = i),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: selected
+                            ? const Color(0xFFFF5C35).withValues(alpha: 0.25)
+                            : const Color(0xFF2A2A2A),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: selected
+                              ? const Color(0xFFFF5C35)
+                              : const Color(0xFF444444),
+                          width: selected ? 2 : 1,
+                        ),
+                      ),
+                      child: Icon(
+                        _folderIcons[i],
+                        color: selected
+                            ? const Color(0xFFFF5C35)
+                            : const Color(0xFFF0EFEB),
+                        size: 28,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text(
+                  'Cancel',
+                  style: TextStyle(color: Color(0xFF888888)),
+                ),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(sel),
+                child: const Text(
+                  'Done',
+                  style: TextStyle(color: Color(0xFFFF5C35)),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   /// Shows an app multi-select dialog. Returns list of chosen package names
@@ -859,6 +1026,26 @@ class _RadialLauncherState extends State<RadialLauncher>
               itemBuilder: (_, i) => CheckboxListTile(
                 dense: true,
                 value: selected.contains(sorted[i].packageName),
+                secondary: sorted[i].icon != null
+                    ? ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: Image.memory(
+                          sorted[i].icon!,
+                          width: 24,
+                          height: 24,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => const Icon(
+                            Icons.apps,
+                            size: 22,
+                            color: Color(0xFF888888),
+                          ),
+                        ),
+                      )
+                    : const Icon(
+                        Icons.apps,
+                        size: 22,
+                        color: Color(0xFF888888),
+                      ),
                 title: Text(
                   sorted[i].label,
                   style: const TextStyle(
@@ -948,7 +1135,10 @@ class _RadialLauncherState extends State<RadialLauncher>
             shrinkWrap: true,
             children: [
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
                 child: Text(
                   '${_folders.length} folder${_folders.length == 1 ? '' : 's'}',
                   style: const TextStyle(
@@ -962,9 +1152,9 @@ class _RadialLauncherState extends State<RadialLauncher>
                 final f = _folders[i];
                 final count = f.packageNames.length;
                 return ListTile(
-                  leading: const Icon(
-                    Icons.folder_outlined,
-                    color: Color(0xFFF0EFEB),
+                  leading: Icon(
+                    _folderIcons[f.iconIndex.clamp(0, _folderIcons.length - 1)],
+                    color: const Color(0xFFF0EFEB),
                     size: 22,
                   ),
                   title: Text(
@@ -1056,8 +1246,7 @@ class _RadialLauncherState extends State<RadialLauncher>
             ),
           ),
           TextButton(
-            onPressed: () =>
-                Navigator.of(ctx).pop(nameController.text.trim()),
+            onPressed: () => Navigator.of(ctx).pop(nameController.text.trim()),
             child: const Text(
               'Next',
               style: TextStyle(color: Color(0xFFFF5C35)),
@@ -1067,12 +1256,17 @@ class _RadialLauncherState extends State<RadialLauncher>
       ),
     );
     if (name == null || name.isEmpty || !mounted) return;
+    final iconIdx = await _pickFolderIcon(folder.iconIndex);
+    if (iconIdx == null || !mounted) return;
     final pkgs = await _pickFolderApps(folder.packageNames);
     if (pkgs == null || !mounted) return;
     setState(() {
       _folders = [
         for (int i = 0; i < _folders.length; i++)
-          if (i == index) FolderEntry(name, pkgs) else _folders[i],
+          if (i == index)
+            FolderEntry(name, pkgs, iconIndex: iconIdx)
+          else
+            _folders[i],
       ];
     });
     _saveFolders();
@@ -1165,8 +1359,7 @@ class _RadialLauncherState extends State<RadialLauncher>
                   elevation: 8,
                   child: tile,
                 ),
-                childWhenDragging:
-                    tile,
+                childWhenDragging: tile,
                 child: DragTarget<int>(
                   onAcceptWithDetails: (d) {
                     if (d.data != i) _reorderWidgets(d.data, i);
@@ -1229,9 +1422,7 @@ class _WidgetTile extends StatelessWidget {
     final tileBody = Container(
       width: w,
       height: h,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(16),
-      ),
+      decoration: BoxDecoration(borderRadius: BorderRadius.circular(16)),
       clipBehavior: Clip.antiAlias,
       child: isEditing
           ? Stack(
@@ -1273,14 +1464,13 @@ class _WidgetTile extends StatelessWidget {
 
     if (!isEditing) return tileBody;
 
-    final phase = (entry.appWidgetId % 2 == 0 ? 1 : -1) *
+    final phase =
+        (entry.appWidgetId % 2 == 0 ? 1 : -1) *
         (1 + (entry.appWidgetId % 5) * 0.1);
     return AnimatedBuilder(
       animation: jiggleAnim,
-      builder: (context, child) => Transform.rotate(
-        angle: jiggleAnim.value * phase,
-        child: child,
-      ),
+      builder: (context, child) =>
+          Transform.rotate(angle: jiggleAnim.value * phase, child: child),
       child: tileBody,
     );
   }
@@ -1318,6 +1508,8 @@ class _LabelLayout {
   final double midRad;
   final Offset center;
   final TextPainter painter;
+  final ui.Image? appIcon;
+  final IconData? folderIcon;
 
   const _LabelLayout({
     required this.label,
@@ -1326,6 +1518,8 @@ class _LabelLayout {
     required this.midRad,
     required this.center,
     required this.painter,
+    this.appIcon,
+    this.folderIcon,
   });
 }
 
@@ -1354,11 +1548,15 @@ class _Painter extends CustomPainter {
   static final Paint _folderSegmentPaint = Paint()
     ..color = const Color(0xFF5C5C5C);
   static final Path _previewTabPath = _buildPreviewTabPath();
+  static const double _iconSize = 14.0;
+  static const double _iconTextGap = 3.0;
 
   final Offset anchor;
   final List<Object> items;
   final int offset;
   final int? selectedSlot;
+  final Map<String, ui.Image> appIconImages;
+  final List<IconData> folderIconsList;
 
   late final int _visible;
   late final double _segRad;
@@ -1374,6 +1572,8 @@ class _Painter extends CustomPainter {
     required this.items,
     required this.offset,
     required this.selectedSlot,
+    required this.appIconImages,
+    required this.folderIconsList,
   }) {
     _visible = math.min(_kVisibleAppCount, items.length);
     _segRad = _visible == 0 ? 0 : _kMenuSpanRad / _visible;
@@ -1518,6 +1718,8 @@ class _Painter extends CustomPainter {
       final isSelected = selectedSlot == i;
       if (isFolder) _folderSlots.add(i);
       final midRad = _kMenuStartRad + (i + 0.5) * _segRad;
+      final textMaxWidth =
+          72 * _kLabelScale - _iconSize * _kLabelScale - _iconTextGap;
       final painter = TextPainter(
         text: TextSpan(
           text: _labelOf(item),
@@ -1531,7 +1733,11 @@ class _Painter extends CustomPainter {
           ),
         ),
         textDirection: TextDirection.ltr,
-      )..layout(maxWidth: 72 * _kLabelScale);
+      )..layout(maxWidth: textMaxWidth.clamp(40, 120));
+      final appIcon = item is AppEntry ? appIconImages[item.packageName] : null;
+      final folderIcon = item is FolderEntry
+          ? folderIconsList[item.iconIndex.clamp(0, folderIconsList.length - 1)]
+          : null;
       labels.add(
         _LabelLayout(
           label: _labelOf(item),
@@ -1540,6 +1746,8 @@ class _Painter extends CustomPainter {
           midRad: midRad,
           center: _point(midR, midRad),
           painter: painter,
+          appIcon: appIcon,
+          folderIcon: folderIcon,
         ),
       );
     }
@@ -1578,11 +1786,7 @@ class _Painter extends CustomPainter {
     final segS = _kMenuStartRad + slot * _segRad;
     return Path()
       ..moveTo(anchor.dx, anchor.dy)
-      ..addArc(
-        Rect.fromCircle(center: anchor, radius: _kOuterR),
-        segS,
-        _segRad,
-      )
+      ..addArc(Rect.fromCircle(center: anchor, radius: _kOuterR), segS, _segRad)
       ..lineTo(anchor.dx, anchor.dy);
   }
 
@@ -1610,7 +1814,90 @@ class _Painter extends CustomPainter {
     canvas.save();
     canvas.translate(tc.dx, tc.dy);
     canvas.rotate(rad + math.pi);
-    pp.paint(canvas, Offset(-pp.width / 2, -pp.height / 2));
+    final preIconSize = 18.0 * _kLauncherScale;
+    final preGap = 4.0 * _kLauncherScale;
+    final textX = -pp.width / 2;
+    final textY = -pp.height / 2;
+    if (sel.appIcon != null) {
+      final img = sel.appIcon!;
+      canvas.drawImageRect(
+        img,
+        Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
+        Rect.fromLTWH(
+          textX - preIconSize - preGap,
+          textY + (pp.height - preIconSize) / 2,
+          preIconSize,
+          preIconSize,
+        ),
+        Paint()..filterQuality = FilterQuality.low,
+      );
+    } else if (sel.folderIcon != null) {
+      final iconPainter = TextPainter(
+        text: TextSpan(
+          text: String.fromCharCode(sel.folderIcon!.codePoint),
+          style: TextStyle(
+            fontFamily: 'MaterialIcons',
+            fontSize: preIconSize,
+            color: const Color(0xFF1A1A1A),
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      iconPainter.paint(
+        canvas,
+        Offset(
+          textX - preIconSize - preGap,
+          textY + (pp.height - preIconSize) / 2,
+        ),
+      );
+    }
+    pp.paint(canvas, Offset(textX, textY));
+    canvas.restore();
+  }
+
+  void _drawLabelWithIcon(Canvas canvas, _LabelLayout label) {
+    canvas.save();
+    canvas.translate(label.center.dx, label.center.dy);
+    canvas.rotate(label.midRad + math.pi);
+
+    final textOffset = Offset(
+      -label.painter.width / 2,
+      -label.painter.height / 2,
+    );
+    final scaledIcon = _iconSize * _kLauncherScale;
+
+    if (label.appIcon != null) {
+      final img = label.appIcon!;
+      final srcW = img.width.toDouble();
+      final srcH = img.height.toDouble();
+      final iconX = textOffset.dx - scaledIcon - _iconTextGap;
+      final iconY = textOffset.dy + (label.painter.height - scaledIcon) / 2;
+      canvas.drawImageRect(
+        img,
+        Rect.fromLTWH(0, 0, srcW, srcH),
+        Rect.fromLTWH(iconX, iconY, scaledIcon, scaledIcon),
+        Paint()..filterQuality = FilterQuality.low,
+      );
+    } else if (label.folderIcon != null) {
+      final iconPainter = TextPainter(
+        text: TextSpan(
+          text: String.fromCharCode(label.folderIcon!.codePoint),
+          style: TextStyle(
+            fontFamily: 'MaterialIcons',
+            fontSize: scaledIcon,
+            color: label.isFolder && label.slot == (selectedSlot ?? -1)
+                ? Colors.white
+                : const Color(0xFFFFFFFF),
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      final iconX = textOffset.dx - scaledIcon - _iconTextGap;
+      final iconY = textOffset.dy + (label.painter.height - scaledIcon) / 2;
+      iconPainter.paint(canvas, Offset(iconX, iconY));
+    }
+
+    label.painter.paint(canvas, textOffset);
     canvas.restore();
   }
 
@@ -1623,10 +1910,7 @@ class _Painter extends CustomPainter {
     canvas.clipPath(_bgPath);
     for (final slot in _folderSlots) {
       if (slot == selectedSlot) continue;
-      canvas.drawPath(
-        _buildFolderSegmentPath(slot),
-        _folderSegmentPaint,
-      );
+      canvas.drawPath(_buildFolderSegmentPath(slot), _folderSegmentPaint);
     }
     if (_selectionPath != null) {
       final selIsFolder = _selectedLabel!.isFolder;
@@ -1640,14 +1924,7 @@ class _Painter extends CustomPainter {
     _drawDivider(canvas, _kMenuStartRad);
     _drawDivider(canvas, _kMenuEndRad);
     for (final label in _labels) {
-      canvas.save();
-      canvas.translate(label.center.dx, label.center.dy);
-      canvas.rotate(label.midRad + math.pi);
-      label.painter.paint(
-        canvas,
-        Offset(-label.painter.width / 2, -label.painter.height / 2),
-      );
-      canvas.restore();
+      _drawLabelWithIcon(canvas, label);
     }
     if (_selectedLabel != null && _previewPainter != null) {
       _drawPreview(canvas, _selectedLabel, _previewPainter);
@@ -1659,5 +1936,7 @@ class _Painter extends CustomPainter {
       old.anchor != anchor ||
       old.items != items ||
       old.offset != offset ||
-      old.selectedSlot != selectedSlot;
+      old.selectedSlot != selectedSlot ||
+      old.appIconImages != appIconImages ||
+      old.folderIconsList != folderIconsList;
 }

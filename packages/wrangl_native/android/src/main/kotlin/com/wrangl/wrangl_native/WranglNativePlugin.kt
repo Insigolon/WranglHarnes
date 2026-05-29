@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -250,13 +251,31 @@ class WranglNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
         val apps = pm.queryIntentActivities(intent, 0)
             .filter { it.activityInfo.packageName != appContext.packageName }
             .map {
+                val drawable = it.activityInfo.loadIcon(pm)
+                val iconBytes = try {
+                    val bitmap = Bitmap.createBitmap(
+                        drawable.intrinsicWidth.coerceAtLeast(1),
+                        drawable.intrinsicHeight.coerceAtLeast(1),
+                        Bitmap.Config.ARGB_8888,
+                    )
+                    val cv = Canvas(bitmap)
+                    drawable.setBounds(0, 0, cv.width, cv.height)
+                    drawable.draw(cv)
+                    ByteArrayOutputStream().use { stream ->
+                        bitmap.compress(Bitmap.CompressFormat.PNG, 96, stream)
+                        stream.toByteArray()
+                    }
+                } catch (_: Exception) {
+                    null
+                }
                 mapOf(
                     "packageName" to it.activityInfo.packageName,
                     "label" to it.loadLabel(pm).toString(),
+                    "icon" to iconBytes,
                 )
             }
             .distinctBy { it["packageName"] }
-            .sortedBy { it["label"]?.lowercase() }
+            .sortedBy { (it["label"] as? String)?.lowercase() }
         result.success(apps)
     }
 
