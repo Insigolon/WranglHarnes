@@ -49,7 +49,6 @@ class _OverlayAgent extends ChangeNotifier {
   final List<_Msg> messages = [];
   final List<AgentStep> steps = [];
   final CancellationToken _cancelToken = CancellationToken();
-  int _turnCount = 0;
 
   Future<void> ensureLoaded() async {
     if (ready || booting) return;
@@ -68,15 +67,6 @@ class _OverlayAgent extends ChangeNotifier {
       booting = false;
       notifyListeners();
     }
-  }
-
-  Future<void> reloadModel() async {
-    _client?.dispose();
-    _client = null;
-    _harness = null;
-    ready = false;
-    booting = false;
-    await ensureLoaded();
   }
 
   Future<String> _complete({
@@ -117,7 +107,6 @@ class _OverlayAgent extends ChangeNotifier {
           },
         )
         .toList();
-    if (prior.length > 1) prior.removeRange(0, prior.length - 1);
     messages.add(_Msg(true, text));
     steps.clear();
     loading = true;
@@ -139,14 +128,6 @@ class _OverlayAgent extends ChangeNotifier {
       messages.add(_Msg(false, 'Error: $e'));
     } finally {
       loading = false;
-      _turnCount++;
-      if (_turnCount >= 3) {
-        _turnCount = 0;
-        reloadModel();
-      }
-      if (messages.length > 4) {
-        messages.removeRange(0, messages.length - 4);
-      }
       notifyListeners();
     }
   }

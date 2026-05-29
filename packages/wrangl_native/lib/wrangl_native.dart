@@ -66,7 +66,7 @@ class WranglNative {
     if (query != null) args['query'] = query;
     if (mimeType != null) args['mimeType'] = mimeType;
     final raw = await _ch.invokeListMethod<Map>('scanFiles', args) ?? [];
-    return raw.cast<Map<String, dynamic>>();
+    return raw.map((m) => Map<String, dynamic>.from(m)).toList();
   }
 
   // ── Settings deep-links ─────────────────────────────────────────────────────
@@ -81,6 +81,12 @@ class WranglNative {
         false;
   }
 
+  /// Opens the system "Default home app" settings page so the user can set
+  /// Wrangl as the default launcher (required for widget hosting on API 35+).
+  static Future<bool> openHomeSettings() async {
+    return await _ch.invokeMethod<bool>('openHomeSettings') ?? false;
+  }
+
   // ── SMS reading (requires READ_SMS permission) ─────────────────────────────
 
   /// Read recent SMS messages from the inbox.
@@ -92,7 +98,7 @@ class WranglNative {
           {'limit': limit},
         ) ??
         [];
-    return raw.cast<Map<String, dynamic>>();
+    return raw.map((m) => Map<String, dynamic>.from(m)).toList();
   }
 
   /// Opens the system file/image picker from the main activity context.

@@ -2,6 +2,7 @@ package com.wrangl.wrangl_native
 
 import android.app.Activity
 import android.content.Context
+import android.content.pm.PackageManager
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
@@ -120,6 +121,7 @@ class WranglNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
     private lateinit var eventChannel: EventChannel
     private lateinit var appContext: Context
     private var eventSink: EventChannel.EventSink? = null
+    private lateinit var widgetHost: WidgetHostManager
 
     // ── FlutterPlugin ──────────────────────────────────────────────────────────
 
@@ -145,6 +147,13 @@ class WranglNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
                 eventSink = null
             }
         })
+
+        widgetHost = WidgetHostManager(appContext)
+
+        binding.platformViewRegistry.registerViewFactory(
+            "com.wrangl/widget_host",
+            WidgetHostViewFactory(widgetHost),
+        )
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -160,28 +169,36 @@ class WranglNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
         mainActivity = binding.activity
+        widgetHost.setActivity(binding.activity)
+        widgetHost.onStart()
         binding.addActivityResultListener { requestCode, resultCode, data ->
-            if (requestCode == REQUEST_MEDIA_PROJECTION) {
-                onMediaProjectionResult(resultCode, data)
-                true
-            } else if (requestCode == REQUEST_PICK_FILE) {
-                onPickFileResult(resultCode, data)
-                true
-            } else {
-                false
+            when (requestCode) {
+                REQUEST_MEDIA_PROJECTION -> {
+                    onMediaProjectionResult(resultCode, data)
+                    true
+                }
+                REQUEST_PICK_FILE -> {
+                    onPickFileResult(resultCode, data)
+                    true
+                }
+                else -> widgetHost.handleActivityResult(requestCode, resultCode, data)
             }
         }
     }
 
     override fun onDetachedFromActivity() {
+        widgetHost.onStop()
+        widgetHost.setActivity(null)
         mainActivity = null
     }
 
     override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
         mainActivity = binding.activity
+        widgetHost.setActivity(binding.activity)
     }
 
     override fun onDetachedFromActivityForConfigChanges() {
+        widgetHost.setActivity(null)
         mainActivity = null
     }
 
@@ -206,6 +223,22 @@ class WranglNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
                 (call.argument<Int>("limit") ?: 20).coerceIn(1, 100),
                 result,
             )
+            "listWidgetProviders" -> widgetHost.listWidgetProviders(result)
+            "bindWidget" -> widgetHost.bindWidget(
+                call.argument<String>("providerPackage") ?: "",
+                call.argument<String>("providerClass") ?: "",
+                result,
+            )
+            "refreshWidgets" -> widgetHost.refreshWidgets(result)
+            "removeWidget" -> widgetHost.removeWidget(
+                call.argument<Int>("appWidgetId") ?: -1,
+                result,
+            )
+            "setWidgetOrder" -> widgetHost.setWidgetOrder(
+                (call.argument<List<Int>>("widgetIds") ?: emptyList()),
+                result,
+            )
+            "openHomeSettings" -> openHomeSettings(result)
             else -> result.notImplemented()
         }
     }
@@ -421,6 +454,35 @@ class WranglNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
 
     private fun scanFiles(query: String?, mimeType: String?, result: MethodChannel.Result) {
         try {
+            // Runtime permission check (Android 13+ granular media permissions).
+            val permission = if (Build.VERSION.SDK_INT >= 33) {
+                when (mimeType?.trim()?.lowercase()) {
+                    "image" -> android.Manifest.permission.READ_MEDIA_IMAGES
+                    "video" -> android.Manifest.permission.READ_MEDIA_VIDEO
+                    "audio" -> android.Manifest.permission.READ_MEDIA_AUDIO
+                    else -> null // document or unspecified — check all below
+                }
+            } else {
+                android.Manifest.permission.READ_EXTERNAL_STORAGE
+            }
+            val granted = if (permission != null) {
+                appContext.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+            } else {
+                // No single permission covers the mimeType; check any of the three.
+                (Build.VERSION.SDK_INT < 33) ||
+                    (appContext.checkSelfPermission(android.Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED) ||
+                    (appContext.checkSelfPermission(android.Manifest.permission.READ_MEDIA_VIDEO) == PackageManager.PERMISSION_GRANTED) ||
+                    (appContext.checkSelfPermission(android.Manifest.permission.READ_MEDIA_AUDIO) == PackageManager.PERMISSION_GRANTED)
+            }
+            if (!granted) {
+                val hint = if (Build.VERSION.SDK_INT >= 33)
+                    "Grant the READ_MEDIA_IMAGES / READ_MEDIA_VIDEO / READ_MEDIA_AUDIO runtime permission in Settings > Apps > Wrangl"
+                else
+                    "Grant the READ_EXTERNAL_STORAGE runtime permission in Settings > Apps > Wrangl"
+                result.error("PERMISSION_DENIED", "MediaStore read permission not granted. $hint", null)
+                return
+            }
+
             val uri = MediaStore.Files.getContentUri("external")
             val projections = arrayOf(
                 MediaStore.Files.FileColumns._ID,
@@ -514,6 +576,18 @@ class WranglNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
             ?: Settings.ACTION_SETTINGS
         try {
             val intent = Intent(action).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            appContext.startActivity(intent)
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("LAUNCH_FAILED", e.message, null)
+        }
+    }
+
+    private fun openHomeSettings(result: MethodChannel.Result) {
+        try {
+            val intent = Intent(Settings.ACTION_HOME_SETTINGS).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             appContext.startActivity(intent)

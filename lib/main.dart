@@ -5,12 +5,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:wrangl_native/wrangl_native.dart';
 import 'agent/model_config.dart';
 import 'overlay/bubble_overlay.dart';
 import 'screens/model_download_screen.dart';
 import 'src/rust/api/simple.dart';
 import 'src/rust/frb_generated.dart';
+import 'features/wallpaper/wallpaper_service.dart';
+import 'features/widget_host/widget_host_service.dart';
+import 'features/widget_host/widget_host.dart';
 
 /// Reliable overlay-permission bridge to [MainActivity]'s Kotlin channel.
 /// Unlike `FlutterOverlayWindow.requestPermission()`, this suspends until the
@@ -93,6 +97,12 @@ class AppEntry {
   const AppEntry(this.packageName, this.label);
 }
 
+class FolderEntry {
+  final String name;
+  final List<String> packageNames;
+  const FolderEntry(this.name, this.packageNames);
+}
+
 // ─── Launcher constants ──────────────────────────────────────────────────────
 const double _kArcStart = 160.0;
 const double _kArcEnd = 290.0;
@@ -135,7 +145,14 @@ class _RadialLauncherState extends State<RadialLauncher>
   int? _selSlot;
   int _offset = 0;
   List<AppEntry> _apps = const [];
+  List<FolderEntry> _folders = const [];
   final Stopwatch _pageStopwatch = Stopwatch()..start();
+
+  List<Object> get _displayItems {
+    final inFolders = _folders.expand((f) => f.packageNames).toSet();
+    final unassigned = _apps.where((a) => !inFolders.contains(a.packageName)).toList();
+    return [..._folders, ...unassigned];
+  }
 
   late final AnimationController _ctrl = AnimationController(
     vsync: this,
@@ -146,15 +163,65 @@ class _RadialLauncherState extends State<RadialLauncher>
     curve: Curves.easeOutCubic,
   );
 
+  final WallpaperService _wallpaper = WallpaperService();
+  final WidgetHostService _widgetHost = WidgetHostService();
+
+  bool _isEditing = false;
+  late final AnimationController _editCtrl = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 500),
+  );
+  late final Animation<double> _editAnim = Tween<double>(
+    begin: -0.03,
+    end: 0.03,
+  ).animate(CurvedAnimation(parent: _editCtrl, curve: Curves.easeInOut));
+
   @override
   void initState() {
     super.initState();
     _loadApps();
+    _loadFolders();
+    _wallpaper.load();
+    _widgetHost.load();
+    _widgetHost.addListener(_onWidgetsChanged);
   }
 
   Future<void> _loadApps() async {
     final entries = await _AppLauncher.getInstalledApps();
     if (mounted) setState(() => _apps = entries);
+  }
+
+  Future<File> get _foldersFile async {
+    final dir = await getApplicationDocumentsDirectory();
+    return File('${dir.path}/folders.json');
+  }
+
+  Future<void> _loadFolders() async {
+    try {
+      final file = await _foldersFile;
+      if (await file.exists()) {
+        final json = jsonDecode(await file.readAsString()) as List;
+        if (mounted) {
+          setState(() {
+            _folders = json.map((e) => FolderEntry(
+              e['name'] as String,
+              (e['packageNames'] as List).cast<String>(),
+            )).toList();
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('[folders] load failed: $e');
+    }
+  }
+
+  Future<void> _saveFolders() async {
+    final file = await _foldersFile;
+    final json = jsonEncode(_folders.map((f) => {
+      'name': f.name,
+      'packageNames': f.packageNames,
+    }).toList());
+    await file.writeAsString(json);
   }
 
   // ── voice input → overlay with recording ───────────────
@@ -178,8 +245,7 @@ class _RadialLauncherState extends State<RadialLauncher>
     bool startVoice = false,
   }) async {
     final view = WidgetsBinding.instance.platformDispatcher.views.first;
-    final screenW =
-        (view.physicalSize.width / view.devicePixelRatio).round();
+    final screenW = (view.physicalSize.width / view.devicePixelRatio).round();
     try {
       await FlutterOverlayWindow.showOverlay(
         height: 200,
@@ -235,11 +301,17 @@ class _RadialLauncherState extends State<RadialLauncher>
   // ── launcher gestures ─────────────────────────────────────────────────────
 
   void _launchSelected() {
-    if (_selSlot == null || _apps.isEmpty) return;
+    final items = _displayItems;
+    if (_selSlot == null || items.isEmpty) return;
     final idx =
-        ((_selSlot! + _offset) % _apps.length + _apps.length) % _apps.length;
-    _AppLauncher.openApp(_apps[idx].packageName);
-    HapticFeedback.lightImpact();
+        ((_selSlot! + _offset) % items.length + items.length) % items.length;
+    final item = items[idx];
+    if (item is FolderEntry) {
+      _showFolderPopup(item);
+    } else if (item is AppEntry) {
+      _AppLauncher.openApp(item.packageName);
+      HapticFeedback.lightImpact();
+    }
     setState(() {
       _open = false;
       _selSlot = null;
@@ -279,7 +351,7 @@ class _RadialLauncherState extends State<RadialLauncher>
   }
 
   void _nudge(int d, {bool clearSelection = false}) {
-    final total = _apps.length;
+    final total = _displayItems.length;
     if (total == 0) return;
     setState(() {
       _offset = ((_offset + d) % total + total) % total;
@@ -317,7 +389,7 @@ class _RadialLauncherState extends State<RadialLauncher>
       allowPaging ? _pageByDrag(1) : _nudge(1, clearSelection: true);
       return;
     }
-    final total = _apps.length;
+    final total = _displayItems.length;
     final visible = math.min(_kVisibleAppCount, total);
     if (visible == 0) return;
     final slot = (((ang - _kMenuStartRad) / _kMenuSpanRad) * visible)
@@ -339,72 +411,877 @@ class _RadialLauncherState extends State<RadialLauncher>
     c.maxHeight - _kHubR - _kCornerInset,
   );
 
+  void _onWidgetsChanged() {
+    if (_isEditing && _widgetHost.value.isEmpty) {
+      if (mounted) setState(() => _isEditing = false);
+    }
+  }
+
+  void _toggleEditMode() {
+    setState(() {
+      _isEditing = !_isEditing;
+      if (_isEditing) {
+        _editCtrl.repeat(reverse: true);
+      } else {
+        _editCtrl.stop();
+        _editCtrl.reset();
+      }
+    });
+  }
+
+  void _reorderWidgets(int from, int to) {
+    if (from == to) return;
+    _widgetHost.move(from, to);
+  }
+
   @override
   void dispose() {
     _ctrl.dispose();
+    _editCtrl.dispose();
+    _wallpaper.dispose();
+    _widgetHost.removeListener(_onWidgetsChanged);
+    _widgetHost.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0D0D0D),
+      backgroundColor: Colors.transparent,
       resizeToAvoidBottomInset: false,
-      body: Stack(
-        children: [
-          LayoutBuilder(
-            builder: (_, c) {
-              final anchor = _computeAnchor(c);
-              return Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  // ── radial launcher ──────────────────────────────────
-                  GestureDetector(
-                    onDoubleTap: _toggle,
-                    onPanStart: (d) => _panStart(d, anchor),
-                    onPanUpdate: (d) => _pan(d, anchor),
-                    onPanEnd: _panEnd,
-                    onTapDown: (d) => _tap(d, anchor),
-                    onTap: () {
-                      if (_open && _selSlot != null) _launchSelected();
-                    },
-                    child: Stack(
-                      clipBehavior: Clip.none,
-                      children: [
-                        Positioned.fill(
-                          child: FadeTransition(
-                            opacity: _anim,
-                            child: RepaintBoundary(
-                              child: CustomPaint(
-                                painter: _Painter(
-                                  anchor: anchor,
-                                  apps: _apps,
-                                  offset: _offset,
-                                  selectedSlot: _selSlot,
+      body: ListenableBuilder(
+        listenable: _wallpaper,
+        builder: (_, _) => Stack(
+          children: [
+            // ── wallpaper ──────────────────────────────────────────────
+            if (_wallpaper.value != null)
+              Positioned.fill(
+                child: Image.memory(_wallpaper.value!, fit: BoxFit.cover),
+              ),
+            // ── dark scrim (improves readability over any wallpaper) ───
+            Container(
+              color: _wallpaper.value != null
+                  ? Colors.black.withValues(alpha: 0)
+                  : const Color(0xFF0D0D0D),
+            ),
+            // ── radial launcher ───────────────────────────────────────
+            LayoutBuilder(
+              builder: (_, c) {
+                final anchor = _computeAnchor(c);
+                return Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    GestureDetector(
+                      onLongPress: _showContextMenu,
+                      onDoubleTap: _toggle,
+                      onPanStart: (d) => _panStart(d, anchor),
+                      onPanUpdate: (d) => _pan(d, anchor),
+                      onPanEnd: _panEnd,
+                      onTapDown: (d) => _tap(d, anchor),
+                      onTap: () {
+                        if (_open && _selSlot != null) _launchSelected();
+                      },
+                      child: Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          Positioned.fill(
+                            child: FadeTransition(
+                              opacity: _anim,
+                              child: RepaintBoundary(
+                                child: CustomPaint(
+                                  painter: _Painter(
+                                    anchor: anchor,
+                                    items: _displayItems,
+                                    offset: _offset,
+                                    selectedSlot: _selSlot,
+                                  ),
+                                  child: const SizedBox.expand(),
                                 ),
-                                child: const SizedBox.expand(),
                               ),
                             ),
                           ),
-                        ),
-                        Positioned(
-                          left: anchor.dx - _kHubR,
-                          top: anchor.dy - _kHubR,
-                          child: GestureDetector(
-                            onDoubleTap: _toggle,
-                            onLongPress: _startVoiceInput,
-                            child: const _Hub(key: ValueKey('launcher-hub')),
+                          Positioned(
+                            left: anchor.dx - _kHubR,
+                            top: anchor.dy - _kHubR,
+                            child: GestureDetector(
+                              onDoubleTap: _toggle,
+                              onLongPress: _startVoiceInput,
+                              child: const _Hub(key: ValueKey('launcher-hub')),
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                );
+              },
+            ),
+            // ── widget grid ─────────────────────────────────────────────
+            ListenableBuilder(
+              listenable: _widgetHost,
+              builder: (_, _) => _buildWidgetGrid(),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── context menu (long-press on empty area) ──────────────────────────
+
+  void _showContextMenu() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              _MenuItem(
+                icon: Icons.wallpaper_outlined,
+                label: 'Set Wallpaper',
+                onTap: () {
+                  Navigator.pop(context);
+                  _wallpaper.pickAndSet();
+                },
+              ),
+              _MenuItem(
+                icon: Icons.widgets_outlined,
+                label: 'Add Widget',
+                onTap: () {
+                  Navigator.pop(context);
+                  _addWidget();
+                },
+              ),
+              _MenuItem(
+                icon: _isEditing ? Icons.check : Icons.edit,
+                label: _isEditing ? 'Done' : 'Edit Widgets',
+                onTap: () {
+                  Navigator.pop(context);
+                  _toggleEditMode();
+                },
+              ),
+              _MenuItem(
+                icon: Icons.remove_circle_outline,
+                label: 'Reset Wallpaper',
+                onTap: () {
+                  Navigator.pop(context);
+                  _wallpaper.reset();
+                },
+              ),
+              _MenuItem(
+                icon: Icons.create_new_folder_outlined,
+                label: 'Create Folder',
+                onTap: () {
+                  Navigator.pop(context);
+                  _createFolder();
+                },
+              ),
+              _MenuItem(
+                icon: Icons.folder_outlined,
+                label: 'Manage Folders',
+                onTap: () {
+                  Navigator.pop(context);
+                  _manageFolders();
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _addWidget() async {
+    final providers = await _widgetHost.getProviders();
+    if (!mounted || providers.isEmpty) return;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: ListView(
+            shrinkWrap: true,
+            children: List.generate(providers.length, (i) {
+              final p = providers[i];
+              return _MenuItem(
+                icon: Icons.widgets_outlined,
+                label: p.providerLabel,
+                onTap: () async {
+                  Navigator.pop(context);
+                  try {
+                    await _widgetHost.addWidget(
+                      p.providerPackage,
+                      p.providerClass,
+                    );
+                  } on WidgetHostException catch (e) {
+                    _showLauncherSettingsDialog(e.code, e.message);
+                  }
+                },
               );
+            }),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _confirmRemoveWidget(int appWidgetId, String label) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: const Text(
+          'Remove Widget',
+          style: TextStyle(color: Color(0xFFF0EFEB)),
+        ),
+        content: Text(
+          'Remove "$label"?',
+          style: const TextStyle(color: Color(0xFFF0EFEB)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: Color(0xFF888888)),
+            ),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _widgetHost.remove(appWidgetId);
             },
+            child: const Text(
+              'Remove',
+              style: TextStyle(color: Color(0xFFFF2200)),
+            ),
           ),
         ],
       ),
+    );
+  }
+
+  void _showLauncherSettingsDialog(String code, String message) {
+    final title = switch (code) {
+      'BIND_FAILED' => 'Widget Hosting Not Allowed',
+      _ => 'Widget Error ($code)',
+    };
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: Text(title, style: const TextStyle(color: Color(0xFFF0EFEB))),
+        content: Text(
+          message,
+          style: const TextStyle(color: Color(0xFFF0EFEB)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: Color(0xFF888888)),
+            ),
+          ),
+          if (code == 'BIND_FAILED')
+            TextButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                WranglNative.openHomeSettings();
+              },
+              child: const Text(
+                'Open Settings',
+                style: TextStyle(color: Color(0xFFFF5C35)),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // ── folder popup ─────────────────────────────────────────────────────
+
+  void _showFolderPopup(FolderEntry folder) {
+    final pkgSet = folder.packageNames.toSet();
+    final resolved = _apps.where((a) => pkgSet.contains(a.packageName)).toList();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.all(Radius.circular(16)),
+        ),
+        title: Text(
+          folder.name,
+          style: const TextStyle(color: Color(0xFFF0EFEB), fontSize: 18),
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: resolved.isEmpty
+              ? const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 24),
+                  child: Center(
+                    child: Text(
+                      'Folder is empty',
+                      style: TextStyle(color: Color(0xFF888888)),
+                    ),
+                  ),
+                )
+              : ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: resolved.length,
+                  separatorBuilder: (_, _) => const Divider(
+                    color: Color(0xFF333333),
+                    height: 1,
+                  ),
+                  itemBuilder: (_, i) => ListTile(
+                    dense: true,
+                    title: Text(
+                      resolved[i].label,
+                      style: const TextStyle(
+                        color: Color(0xFFF0EFEB),
+                        fontSize: 15,
+                      ),
+                    ),
+                    onTap: () {
+                      Navigator.of(ctx).pop();
+                      _AppLauncher.openApp(resolved[i].packageName);
+                      HapticFeedback.lightImpact();
+                    },
+                  ),
+                ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text(
+              'Close',
+              style: TextStyle(color: Color(0xFFFF5C35)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── folder creation ──────────────────────────────────────────────────
+
+  Future<void> _createFolder() async {
+    final nameController = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.all(Radius.circular(16)),
+        ),
+        title: const Text(
+          'Folder Name',
+          style: TextStyle(color: Color(0xFFF0EFEB)),
+        ),
+        content: TextField(
+          controller: nameController,
+          autofocus: true,
+          style: const TextStyle(color: Color(0xFFF0EFEB)),
+          decoration: const InputDecoration(
+            hintText: 'e.g. Social',
+            hintStyle: TextStyle(color: Color(0xFF666666)),
+            enabledBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: Color(0xFF555555)),
+            ),
+            focusedBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: Color(0xFFFF5C35)),
+            ),
+          ),
+          onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: Color(0xFF888888)),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(nameController.text.trim()),
+            child: const Text(
+              'Next',
+              style: TextStyle(color: Color(0xFFFF5C35)),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty || !mounted) return;
+    final pkgs = await _pickFolderApps(const []);
+    if (pkgs == null || !mounted) return;
+    setState(() {
+      _folders = [..._folders, FolderEntry(name, pkgs)];
+    });
+    _saveFolders();
+  }
+
+  /// Shows an app multi-select dialog. Returns list of chosen package names
+  /// or null if cancelled.
+  Future<List<String>?> _pickFolderApps(List<String> initialPkgs) async {
+    final selected = Set<String>.from(initialPkgs);
+    final sorted = List<AppEntry>.from(_apps)
+      ..sort((a, b) => a.label.compareTo(b.label));
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setInnerState) => AlertDialog(
+          backgroundColor: const Color(0xFF1A1A1A),
+          shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(16)),
+          ),
+          title: const Text(
+            'Select Apps',
+            style: TextStyle(color: Color(0xFFF0EFEB)),
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            height: 400,
+            child: ListView.builder(
+              itemCount: sorted.length,
+              itemBuilder: (_, i) => CheckboxListTile(
+                dense: true,
+                value: selected.contains(sorted[i].packageName),
+                title: Text(
+                  sorted[i].label,
+                  style: const TextStyle(
+                    color: Color(0xFFF0EFEB),
+                    fontSize: 14,
+                  ),
+                ),
+                activeColor: const Color(0xFFFF5C35),
+                checkColor: Colors.white,
+                onChanged: (v) {
+                  setInnerState(() {
+                    if (v == true) {
+                      selected.add(sorted[i].packageName);
+                    } else {
+                      selected.remove(sorted[i].packageName);
+                    }
+                  });
+                },
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text(
+                'Cancel',
+                style: TextStyle(color: Color(0xFF888888)),
+              ),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text(
+                'Done',
+                style: TextStyle(color: Color(0xFFFF5C35)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (ok != true) return null;
+    return selected.toList();
+  }
+
+  // ── folder management ────────────────────────────────────────────────
+
+  void _manageFolders() {
+    if (_folders.isEmpty) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1A1A1A),
+          shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(16)),
+          ),
+          title: const Text(
+            'No Folders',
+            style: TextStyle(color: Color(0xFFF0EFEB)),
+          ),
+          content: const Text(
+            'Tap "Create Folder" to make your first folder.',
+            style: TextStyle(color: Color(0xFF888888)),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text(
+                'OK',
+                style: TextStyle(color: Color(0xFFFF5C35)),
+              ),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Text(
+                  '${_folders.length} folder${_folders.length == 1 ? '' : 's'}',
+                  style: const TextStyle(
+                    color: Color(0xFF888888),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              ...List.generate(_folders.length, (i) {
+                final f = _folders[i];
+                final count = f.packageNames.length;
+                return ListTile(
+                  leading: const Icon(
+                    Icons.folder_outlined,
+                    color: Color(0xFFF0EFEB),
+                    size: 22,
+                  ),
+                  title: Text(
+                    f.name,
+                    style: const TextStyle(
+                      color: Color(0xFFF0EFEB),
+                      fontSize: 15,
+                    ),
+                  ),
+                  subtitle: Text(
+                    '$count app${count == 1 ? '' : 's'}',
+                    style: const TextStyle(
+                      color: Color(0xFF888888),
+                      fontSize: 12,
+                    ),
+                  ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        icon: const Icon(
+                          Icons.edit_outlined,
+                          color: Color(0xFFF0EFEB),
+                          size: 20,
+                        ),
+                        onPressed: () {
+                          Navigator.pop(context);
+                          _editFolder(i);
+                        },
+                      ),
+                      IconButton(
+                        icon: const Icon(
+                          Icons.delete_outline,
+                          color: Color(0xFFFF2200),
+                          size: 20,
+                        ),
+                        onPressed: () {
+                          Navigator.pop(context);
+                          _deleteFolder(i);
+                        },
+                      ),
+                    ],
+                  ),
+                );
+              }),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _editFolder(int index) async {
+    final folder = _folders[index];
+    final nameController = TextEditingController(text: folder.name);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.all(Radius.circular(16)),
+        ),
+        title: const Text(
+          'Rename Folder',
+          style: TextStyle(color: Color(0xFFF0EFEB)),
+        ),
+        content: TextField(
+          controller: nameController,
+          autofocus: true,
+          style: const TextStyle(color: Color(0xFFF0EFEB)),
+          decoration: const InputDecoration(
+            hintText: 'Folder name',
+            hintStyle: TextStyle(color: Color(0xFF666666)),
+            enabledBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: Color(0xFF555555)),
+            ),
+            focusedBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: Color(0xFFFF5C35)),
+            ),
+          ),
+          onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: Color(0xFF888888)),
+            ),
+          ),
+          TextButton(
+            onPressed: () =>
+                Navigator.of(ctx).pop(nameController.text.trim()),
+            child: const Text(
+              'Next',
+              style: TextStyle(color: Color(0xFFFF5C35)),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty || !mounted) return;
+    final pkgs = await _pickFolderApps(folder.packageNames);
+    if (pkgs == null || !mounted) return;
+    setState(() {
+      _folders = [
+        for (int i = 0; i < _folders.length; i++)
+          if (i == index) FolderEntry(name, pkgs) else _folders[i],
+      ];
+    });
+    _saveFolders();
+  }
+
+  Future<void> _deleteFolder(int index) async {
+    final folder = _folders[index];
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.all(Radius.circular(16)),
+        ),
+        title: const Text(
+          'Delete Folder',
+          style: TextStyle(color: Color(0xFFF0EFEB)),
+        ),
+        content: Text(
+          'Delete "${folder.name}"? The apps inside will reappear in your launcher.',
+          style: const TextStyle(color: Color(0xFFF0EFEB)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: Color(0xFF888888)),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text(
+              'Delete',
+              style: TextStyle(color: Color(0xFFFF2200)),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !mounted) return;
+    setState(() {
+      _folders = [
+        for (int i = 0; i < _folders.length; i++)
+          if (i != index) _folders[i],
+      ];
+    });
+    _saveFolders();
+  }
+
+  // ── widget grid rendering ───────────────────────────────────────────
+
+  Widget _buildWidgetGrid() {
+    final widgets = _widgetHost.value;
+    if (widgets.isEmpty) {
+      if (_isEditing) {
+        Future.microtask(() {
+          if (mounted) setState(() => _isEditing = false);
+        });
+      }
+      return const SizedBox.shrink();
+    }
+
+    return Positioned.fill(
+      child: Padding(
+        padding: EdgeInsets.only(
+          top: MediaQuery.of(context).padding.top + 8,
+          left: 8,
+          right: 8,
+          bottom: _kHubR * 2 + _kCornerInset + 60,
+        ),
+        child: LayoutBuilder(
+          builder: (_, c) => Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: List.generate(widgets.length, (i) {
+              final w = widgets[i];
+              final tile = _WidgetTile(
+                entry: w,
+                isEditing: _isEditing,
+                jiggleAnim: _editAnim,
+                onRemove: () =>
+                    _confirmRemoveWidget(w.appWidgetId, w.providerLabel),
+              );
+              if (!_isEditing) return tile;
+              return LongPressDraggable<int>(
+                data: i,
+                feedback: Material(
+                  borderRadius: BorderRadius.circular(16),
+                  elevation: 8,
+                  child: tile,
+                ),
+                childWhenDragging:
+                    tile,
+                child: DragTarget<int>(
+                  onAcceptWithDetails: (d) {
+                    if (d.data != i) _reorderWidgets(d.data, i);
+                  },
+                  builder: (_, __, ___) => tile,
+                ),
+              );
+            }),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Context menu item tile ────────────────────────────────────────────────
+
+class _MenuItem extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  const _MenuItem({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) => ListTile(
+    leading: Icon(icon, color: const Color(0xFFF0EFEB), size: 22),
+    title: Text(
+      label,
+      style: const TextStyle(color: Color(0xFFF0EFEB), fontSize: 15),
+    ),
+    onTap: onTap,
+    dense: true,
+  );
+}
+
+// ─── Widget tile ───────────────────────────────────────────────────────────
+
+class _WidgetTile extends StatelessWidget {
+  final WidgetHostEntry entry;
+  final bool isEditing;
+  final Animation<double> jiggleAnim;
+  final VoidCallback onRemove;
+
+  const _WidgetTile({
+    required this.entry,
+    required this.isEditing,
+    required this.jiggleAnim,
+    required this.onRemove,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final double w = entry.minWidthDp.toDouble();
+    final double h = entry.minHeightDp.toDouble();
+
+    final tileBody = Container(
+      width: w,
+      height: h,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: isEditing
+          ? Stack(
+              clipBehavior: Clip.none,
+              children: [
+                AndroidView(
+                  viewType: 'com.wrangl/widget_host',
+                  creationParams: {'appWidgetId': entry.appWidgetId},
+                  creationParamsCodec: const StandardMessageCodec(),
+                ),
+                Positioned(
+                  top: 4,
+                  right: 4,
+                  child: GestureDetector(
+                    onTap: onRemove,
+                    child: Container(
+                      width: 24,
+                      height: 24,
+                      decoration: const BoxDecoration(
+                        color: Color(0x88000000),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.close,
+                        color: Colors.white,
+                        size: 14,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            )
+          : AndroidView(
+              viewType: 'com.wrangl/widget_host',
+              creationParams: {'appWidgetId': entry.appWidgetId},
+              creationParamsCodec: const StandardMessageCodec(),
+            ),
+    );
+
+    if (!isEditing) return tileBody;
+
+    final phase = (entry.appWidgetId % 2 == 0 ? 1 : -1) *
+        (1 + (entry.appWidgetId % 5) * 0.1);
+    return AnimatedBuilder(
+      animation: jiggleAnim,
+      builder: (context, child) => Transform.rotate(
+        angle: jiggleAnim.value * phase,
+        child: child,
+      ),
+      child: tileBody,
     );
   }
 }
@@ -432,17 +1309,19 @@ class _Hub extends StatelessWidget {
   );
 }
 
-// ─── Painter (unchanged) ─────────────────────────────────────────────────────
+// ─── Painter ─────────────────────────────────────────────────────────────────
 
 class _LabelLayout {
-  final AppEntry app;
+  final String label;
+  final bool isFolder;
   final int slot;
   final double midRad;
   final Offset center;
   final TextPainter painter;
 
   const _LabelLayout({
-    required this.app,
+    required this.label,
+    required this.isFolder,
     required this.slot,
     required this.midRad,
     required this.center,
@@ -472,10 +1351,12 @@ class _Painter extends CustomPainter {
     ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8 * _kLauncherScale);
   static final Paint _selectionFillPaint = Paint()
     ..color = const Color(0xFFFF5C35).withValues(alpha: 0.6);
+  static final Paint _folderSegmentPaint = Paint()
+    ..color = const Color(0xFF5C5C5C);
   static final Path _previewTabPath = _buildPreviewTabPath();
 
   final Offset anchor;
-  final List<AppEntry> apps;
+  final List<Object> items;
   final int offset;
   final int? selectedSlot;
 
@@ -486,16 +1367,18 @@ class _Painter extends CustomPainter {
   late final List<_LabelLayout> _labels;
   late final _LabelLayout? _selectedLabel;
   late final TextPainter? _previewPainter;
+  late final Set<int> _folderSlots;
 
   _Painter({
     required this.anchor,
-    required this.apps,
+    required this.items,
     required this.offset,
     required this.selectedSlot,
   }) {
-    _visible = math.min(_kVisibleAppCount, apps.length);
+    _visible = math.min(_kVisibleAppCount, items.length);
     _segRad = _visible == 0 ? 0 : _kMenuSpanRad / _visible;
     _bgPath = _buildCrescentPath(anchor);
+    _folderSlots = <int>{};
     _labels = _buildLabels();
     _selectedLabel =
         selectedSlot != null &&
@@ -508,7 +1391,7 @@ class _Painter extends CustomPainter {
         : _buildSelectionPath(_selectedLabel.slot);
     _previewPainter = _selectedLabel == null
         ? null
-        : _createPreviewPainter(_selectedLabel.app);
+        : _createPreviewPainter(_selectedLabel.label);
   }
 
   static Offset _pointFor(Offset anchor, double radius, double angle) => Offset(
@@ -618,22 +1501,32 @@ class _Painter extends CustomPainter {
     return delta.clamp(-0.28, 0.28) * 0.45;
   }
 
+  String _labelOf(Object item) {
+    if (item is AppEntry) return item.label;
+    if (item is FolderEntry) return item.name;
+    return '';
+  }
+
   List<_LabelLayout> _buildLabels() {
     if (_visible == 0) return const [];
     final labels = <_LabelLayout>[];
     final midR = (_kInnerR + _kOuterR) / 2;
     for (int i = 0; i < _visible; i++) {
-      final idx = ((i + offset) % apps.length + apps.length) % apps.length;
-      final app = apps[idx];
+      final idx = ((i + offset) % items.length + items.length) % items.length;
+      final item = items[idx];
+      final isFolder = item is FolderEntry;
       final isSelected = selectedSlot == i;
+      if (isFolder) _folderSlots.add(i);
       final midRad = _kMenuStartRad + (i + 0.5) * _segRad;
       final painter = TextPainter(
         text: TextSpan(
-          text: app.label,
+          text: _labelOf(item),
           style: TextStyle(
             fontSize: (isSelected ? 10.5 : 9.5) * _kLabelScale,
             fontWeight: FontWeight.w700,
-            color: isSelected ? Colors.white : const Color(0xFF1A1A1A),
+            color: isSelected
+                ? Colors.white
+                : (isFolder ? Colors.white : const Color(0xFF1A1A1A)),
             letterSpacing: 0,
           ),
         ),
@@ -641,7 +1534,8 @@ class _Painter extends CustomPainter {
       )..layout(maxWidth: 72 * _kLabelScale);
       labels.add(
         _LabelLayout(
-          app: app,
+          label: _labelOf(item),
+          isFolder: isFolder,
           slot: i,
           midRad: midRad,
           center: _point(midR, midRad),
@@ -652,9 +1546,9 @@ class _Painter extends CustomPainter {
     return labels;
   }
 
-  TextPainter _createPreviewPainter(AppEntry app) => TextPainter(
+  TextPainter _createPreviewPainter(String label) => TextPainter(
     text: TextSpan(
-      text: app.label,
+      text: label,
       style: TextStyle(
         fontSize: 15.5 * _kLabelScale,
         fontWeight: FontWeight.w700,
@@ -674,6 +1568,18 @@ class _Painter extends CustomPainter {
           center: anchor,
           radius: _kOuterR + 10 * _kLauncherScale,
         ),
+        segS,
+        _segRad,
+      )
+      ..lineTo(anchor.dx, anchor.dy);
+  }
+
+  Path _buildFolderSegmentPath(int slot) {
+    final segS = _kMenuStartRad + slot * _segRad;
+    return Path()
+      ..moveTo(anchor.dx, anchor.dy)
+      ..addArc(
+        Rect.fromCircle(center: anchor, radius: _kOuterR),
         segS,
         _segRad,
       )
@@ -715,9 +1621,20 @@ class _Painter extends CustomPainter {
     canvas.drawPath(_bgPath, _bgFillPaint);
     canvas.save();
     canvas.clipPath(_bgPath);
+    for (final slot in _folderSlots) {
+      if (slot == selectedSlot) continue;
+      canvas.drawPath(
+        _buildFolderSegmentPath(slot),
+        _folderSegmentPaint,
+      );
+    }
     if (_selectionPath != null) {
+      final selIsFolder = _selectedLabel!.isFolder;
       canvas.drawPath(_selectionPath, _selectionGlowPaint);
-      canvas.drawPath(_selectionPath, _selectionFillPaint);
+      canvas.drawPath(
+        _selectionPath,
+        selIsFolder ? _folderSegmentPaint : _selectionFillPaint,
+      );
     }
     canvas.restore();
     _drawDivider(canvas, _kMenuStartRad);
@@ -740,7 +1657,7 @@ class _Painter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _Painter old) =>
       old.anchor != anchor ||
-      old.apps != apps ||
+      old.items != items ||
       old.offset != offset ||
       old.selectedSlot != selectedSlot;
 }
