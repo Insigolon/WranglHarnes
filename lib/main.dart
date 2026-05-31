@@ -166,7 +166,6 @@ const double _kArcStartRad = _kArcStart * _kDegToRad;
 const double _kArcEndRad = _kArcEnd * _kDegToRad;
 const double _kMenuStartRad = _kMenuStart * _kDegToRad;
 const double _kMenuEndRad = _kMenuEnd * _kDegToRad;
-const double _kArcSpanRad = _kArcEndRad - _kArcStartRad;
 const double _kMenuSpanRad = _kMenuEndRad - _kMenuStartRad;
 const double _kInnerR2 = _kInnerR * _kInnerR;
 const double _kOuterR2 = _kOuterR * _kOuterR;
@@ -186,10 +185,12 @@ class _RadialLauncherState extends State<RadialLauncher>
     with TickerProviderStateMixin, WidgetsBindingObserver {
   // launcher state
   bool _open = false;
+  bool _expanding = false;
   int? _selSlot;
   int _offset = 0;
   List<AppEntry> _apps = const [];
   List<FolderEntry> _folders = const [];
+  Set<String> _hiddenPackages = {};
   final Map<String, ui.Image> _appIconImages = {};
   final Stopwatch _pageStopwatch = Stopwatch()..start();
 
@@ -197,6 +198,7 @@ class _RadialLauncherState extends State<RadialLauncher>
     final inFolders = _folders.expand((f) => f.packageNames).toSet();
     final unassigned = _apps
         .where((a) => !inFolders.contains(a.packageName))
+        .where((a) => !_hiddenPackages.contains(a.packageName))
         .toList();
     return [..._folders, ...unassigned];
   }
@@ -204,10 +206,6 @@ class _RadialLauncherState extends State<RadialLauncher>
   late final AnimationController _ctrl = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 380),
-  );
-  late final Animation<double> _anim = CurvedAnimation(
-    parent: _ctrl,
-    curve: Curves.easeOutCubic,
   );
 
   late final AnimationController _selectCtrl = AnimationController(
@@ -237,9 +235,15 @@ class _RadialLauncherState extends State<RadialLauncher>
         setState(() => _prevSelSlot = _selSlot);
       }
     });
+    _ctrl.addStatusListener((status) {
+      if (status == AnimationStatus.completed) {
+        setState(() => _expanding = false);
+      }
+    });
     WidgetsBinding.instance.addObserver(this);
     _loadApps();
     _loadFolders();
+    _loadHidden();
     _wallpaper.load();
     _widgetHost.load();
     _widgetHost.addListener(_onWidgetsChanged);
@@ -306,6 +310,44 @@ class _RadialLauncherState extends State<RadialLauncher>
           .toList(),
     );
     await file.writeAsString(json);
+  }
+
+  Future<File> get _hiddenFile async {
+    final dir = await getApplicationDocumentsDirectory();
+    return File('${dir.path}/hidden_apps.json');
+  }
+
+  Future<void> _loadHidden() async {
+    try {
+      final file = await _hiddenFile;
+      if (await file.exists()) {
+        final json = jsonDecode(await file.readAsString()) as List;
+        if (mounted) {
+          setState(() => _hiddenPackages = json.cast<String>().toSet());
+        }
+      }
+    } catch (e) {
+      debugPrint('[hidden] load failed: $e');
+    }
+  }
+
+  Future<void> _saveHidden() async {
+    final file = await _hiddenFile;
+    await file.writeAsString(jsonEncode(_hiddenPackages.toList()));
+  }
+
+  // ── overlay activation ──────────────────────────────────
+
+  Future<void> _startOverlay() async {
+    final granted = await _OverlayPermission.isGranted();
+    if (!granted) {
+      final afterGrant = await _OverlayPermission.request();
+      if (!afterGrant) {
+        if (mounted) _showOverlayDeniedDialog();
+        return;
+      }
+    }
+    await _openOverlay();
   }
 
   // ── voice input → overlay with recording ───────────────
@@ -375,6 +417,110 @@ class _RadialLauncherState extends State<RadialLauncher>
     );
   }
 
+  // ── item actions (hide / uninstall) ──────────────────────────────────────
+
+  AppEntry? _getSelectedItem() {
+    final items = _displayItems;
+    if (_selSlot == null || items.isEmpty) return null;
+    final idx =
+        ((_selSlot! + _offset) % items.length + items.length) % items.length;
+    final item = items[idx];
+    return item is AppEntry ? item : null;
+  }
+
+  void _showItemActions() {
+    final app = _getSelectedItem();
+    if (app == null) return;
+    final isHidden = _hiddenPackages.contains(app.packageName);
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: _cBg,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Text(
+                  app.label,
+                  style: const TextStyle(
+                    color: _cText,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              _MenuItem(
+                icon: isHidden ? Icons.visibility : Icons.visibility_off,
+                label: isHidden ? 'Show in Launcher' : 'Hide from Launcher',
+                onTap: () {
+                  Navigator.pop(context);
+                  if (isHidden) {
+                    _unhideApp(app.packageName);
+                  } else {
+                    _hideApp(app.packageName);
+                  }
+                },
+              ),
+              _MenuItem(
+                icon: Icons.delete_forever_outlined,
+                label: 'Uninstall',
+                onTap: () {
+                  Navigator.pop(context);
+                  _confirmUninstallApp(app);
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _hideApp(String packageName) {
+    setState(() => _hiddenPackages = {..._hiddenPackages, packageName});
+    _saveHidden();
+    HapticFeedback.lightImpact();
+  }
+
+  void _unhideApp(String packageName) {
+    setState(() {
+      _hiddenPackages = {..._hiddenPackages}..remove(packageName);
+    });
+    _saveHidden();
+    HapticFeedback.lightImpact();
+  }
+
+  Future<void> _confirmUninstallApp(AppEntry app) async {
+    final confirm = await _dialog<bool>(
+      title: 'Uninstall ${app.label}',
+      content: Text(
+        'Uninstall "${app.label}"? It will be removed from your device.',
+        style: const TextStyle(color: _cText),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancel', style: TextStyle(color: _cGray)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Uninstall', style: TextStyle(color: _cDanger)),
+        ),
+      ],
+    );
+    if (confirm != true || !mounted) return;
+    await WranglNative.uninstallApp(app.packageName);
+    _hiddenPackages = {..._hiddenPackages}..remove(app.packageName);
+    _saveHidden();
+    _loadApps();
+  }
+
   // ── launcher gestures ─────────────────────────────────────────────────────
 
   void _launchSelected() {
@@ -389,34 +535,60 @@ class _RadialLauncherState extends State<RadialLauncher>
       _AppLauncher.openApp(item.packageName);
       HapticFeedback.lightImpact();
     }
+    _closeMenu();
+  }
+
+  void _closeMenu() {
     setState(() {
       _open = false;
+      _expanding = false;
       _selSlot = null;
     });
     _ctrl.reverse();
   }
 
-  void _toggle() {
-    if (!_open) _loadApps();
-    setState(() {
-      _open = !_open;
-      if (!_open) _selSlot = null;
-    });
-    _open ? _ctrl.forward() : _ctrl.reverse();
-  }
-
   void _panStart(DragStartDetails d, Offset anchor) {
-    if (!_open) return;
-    _updateHover(d.localPosition, anchor, allowPaging: false);
+    final dx = d.localPosition.dx - anchor.dx;
+    final dy = d.localPosition.dy - anchor.dy;
+    final dist = math.sqrt(dx * dx + dy * dy);
+    if (!_open && dist < _kHubR + 20.0 && !_ctrl.isAnimating) {
+      _loadApps();
+      _ctrl.value = 0.0;
+      _expanding = true;
+      setState(() => _open = true);
+      return;
+    }
+    if (_open && !_expanding) {
+      _updateHover(d.localPosition, anchor, allowPaging: false);
+    }
   }
 
   void _pan(DragUpdateDetails d, Offset anchor) {
-    if (!_open) return;
+    if (!_open || _ctrl.isAnimating) return;
+    if (_expanding) {
+      final dx = d.localPosition.dx - anchor.dx;
+      final dy = d.localPosition.dy - anchor.dy;
+      final dist = math.sqrt(dx * dx + dy * dy);
+      final expansion = ((dist - _kInnerR) / (_kOuterR - _kInnerR)).clamp(0.0, 1.0);
+      _ctrl.value = expansion;
+      setState(() {});
+      return;
+    }
     _updateHover(d.localPosition, anchor);
   }
 
   void _panEnd(DragEndDetails d) {
-    if (!_open) return;
+    if (!_open || _ctrl.isAnimating) return;
+    if (_expanding) {
+      _expanding = false;
+      if (_ctrl.value > 0.3) {
+        _ctrl.forward();
+        setState(() {});
+      } else {
+        _closeMenu();
+      }
+      return;
+    }
     final vx = d.velocity.pixelsPerSecond.dx;
     if (vx.abs() < 650) {
       if (_selSlot != null) _launchSelected();
@@ -555,36 +727,43 @@ class _RadialLauncherState extends State<RadialLauncher>
                   clipBehavior: Clip.none,
                   children: [
                     GestureDetector(
-                      onLongPress: _showContextMenu,
-                      onDoubleTap: _toggle,
+                      onLongPress: () {
+                        if (_open && _selSlot != null) {
+                          _showItemActions();
+                        } else {
+                          _showContextMenu();
+                        }
+                      },
                       onPanStart: (d) => _panStart(d, anchor),
                       onPanUpdate: (d) => _pan(d, anchor),
                       onPanEnd: _panEnd,
                       onTapDown: (d) => _tap(d, anchor),
                       onTap: () {
-                        if (_open && _selSlot != null) _launchSelected();
+                        if (!_open) return;
+                        if (_selSlot != null) {
+                          _launchSelected();
+                        } else {
+                          _closeMenu();
+                        }
                       },
                       child: Stack(
                         clipBehavior: Clip.none,
                         children: [
                           Positioned.fill(
-                            child: FadeTransition(
-                              opacity: _anim,
-                              child: RepaintBoundary(
-                                child: AnimatedBuilder(
-                                  animation: _selectCtrl,
-                                  builder: (context, child) => CustomPaint(
-                                    painter: _Painter(
-                                      anchor: anchor,
-                                      items: _displayItems,
-                                      offset: _offset,
-                                      selectedSlot: _selSlot,
-                                      prevSlot: _prevSelSlot,
-                                      selectionAnimValue: _selectCtrl.value,
-                                      appIconImages: _appIconImages,
-                                      folderIconsList: _folderIcons,
-                                    ),
-                                    child: child!,
+                            child: AnimatedBuilder(
+                              animation: Listenable.merge([_ctrl, _selectCtrl]),
+                              builder: (context, _) => RepaintBoundary(
+                                child: CustomPaint(
+                                  painter: _Painter(
+                                    anchor: anchor,
+                                    items: _displayItems,
+                                    offset: _offset,
+                                    selectedSlot: _selSlot,
+                                    prevSlot: _prevSelSlot,
+                                    selectionAnimValue: _selectCtrl.value,
+                                    expansionFactor: _ctrl.value,
+                                    appIconImages: _appIconImages,
+                                    folderIconsList: _folderIcons,
                                   ),
                                   child: const SizedBox.expand(),
                                 ),
@@ -595,7 +774,7 @@ class _RadialLauncherState extends State<RadialLauncher>
                             left: anchor.dx - _kHubR,
                             top: anchor.dy - _kHubR,
                             child: GestureDetector(
-                              onDoubleTap: _toggle,
+                              onDoubleTap: _startOverlay,
                               onLongPress: _startVoiceInput,
                               child: const _Hub(key: ValueKey('launcher-hub')),
                             ),
@@ -703,6 +882,14 @@ class _RadialLauncherState extends State<RadialLauncher>
                 onTap: () {
                   Navigator.pop(context);
                   _manageFolders();
+                },
+              ),
+              _MenuItem(
+                icon: Icons.visibility_off_outlined,
+                label: 'Hidden Apps',
+                onTap: () {
+                  Navigator.pop(context);
+                  _manageHiddenApps();
                 },
               ),
             ],
@@ -1272,6 +1459,94 @@ class _RadialLauncherState extends State<RadialLauncher>
     _saveFolders();
   }
 
+  // ── hidden apps management ────────────────────────────────────────────
+
+  void _manageHiddenApps() {
+    final hidden = _hiddenPackages
+        .map((pkg) => _apps.where((a) => a.packageName == pkg).toList())
+        .expand((a) => a)
+        .toList();
+    if (hidden.isEmpty) {
+      _dialog(
+        title: 'No Hidden Apps',
+        content: const Text(
+          'Long-press an app in the launcher to hide it.',
+          style: TextStyle(color: _cGray),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK', style: TextStyle(color: _cAccent)),
+          ),
+        ],
+      );
+      return;
+    }
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: _cBg,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Text(
+                  '${hidden.length} hidden app${hidden.length == 1 ? '' : 's'}',
+                  style: const TextStyle(
+                    color: _cGray,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              ...hidden.map(
+                (app) => ListTile(
+                  leading: app.icon != null
+                      ? ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Image.memory(
+                            app.icon!,
+                            width: 28,
+                            height: 28,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => const Icon(
+                              Icons.apps,
+                              size: 24,
+                              color: _cGray,
+                            ),
+                          ),
+                        )
+                      : const Icon(Icons.apps, size: 24, color: _cGray),
+                  title: Text(
+                    app.label,
+                    style: const TextStyle(color: _cText, fontSize: 15),
+                  ),
+                  trailing: IconButton(
+                    icon: const Icon(
+                      Icons.visibility,
+                      color: _cAccent,
+                      size: 20,
+                    ),
+                    onPressed: () {
+                      _unhideApp(app.packageName);
+                      Navigator.pop(context);
+                    },
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   // ── widget grid rendering ───────────────────────────────────────────
 
   Widget _buildWidgetGrid() {
@@ -1512,6 +1787,7 @@ class _Painter extends CustomPainter {
   final int? selectedSlot;
   final int? prevSlot;
   final double selectionAnimValue;
+  final double expansionFactor;
   final Map<String, ui.Image> appIconImages;
   final List<IconData> folderIconsList;
 
@@ -1524,6 +1800,8 @@ class _Painter extends CustomPainter {
   late final TextPainter? _previewPainter;
   late final Set<int> _folderSlots;
 
+  double get _outerR => _kInnerR + (_kOuterR - _kInnerR) * expansionFactor;
+
   _Painter({
     required this.anchor,
     required this.items,
@@ -1531,12 +1809,13 @@ class _Painter extends CustomPainter {
     required this.selectedSlot,
     required this.prevSlot,
     required this.selectionAnimValue,
+    required this.expansionFactor,
     required this.appIconImages,
     required this.folderIconsList,
   }) {
-    _visible = math.min(_kVisibleAppCount, items.length);
+    _visible = expansionFactor < 0.01 ? 0 : math.min(_kVisibleAppCount, items.length);
     _segRad = _visible == 0 ? 0 : _kMenuSpanRad / _visible;
-    _bgPath = _buildCrescentPath(anchor);
+    _bgPath = _visible > 0 ? _buildCrescentPath(anchor) : Path();
     _folderSlots = <int>{};
     _labels = _buildLabels();
     _selectedLabel =
@@ -1601,23 +1880,26 @@ class _Painter extends CustomPainter {
       ..close();
   }
 
-  static Path _buildCrescentPath(Offset anchor) {
+  Path _buildCrescentPath(Offset anchor) {
+    final outerR = _outerR;
+    if (outerR <= _kInnerR + 1) return Path();
     const cornerR = 14 * _kLauncherScale;
-    const outerDelta = cornerR / _kOuterR;
+    final outerDelta = cornerR / outerR;
     const innerDelta = cornerR / _kInnerR;
-    final outerRect = Rect.fromCircle(center: anchor, radius: _kOuterR);
+    final outerRect = Rect.fromCircle(center: anchor, radius: outerR);
     final innerRect = Rect.fromCircle(center: anchor, radius: _kInnerR);
 
     Offset p(double r, double a) => _pointFor(anchor, r, a);
+    final spanRad = _kArcEndRad - _kArcStartRad;
 
-    final startOuterAdj = p(_kOuterR, _kArcStartRad + outerDelta);
-    final startOuter = p(_kOuterR, _kArcStartRad);
+    final startOuterAdj = p(outerR, _kArcStartRad + outerDelta);
+    final startOuter = p(outerR, _kArcStartRad);
     final startInner = p(_kInnerR, _kArcStartRad);
     final startInnerCorner = p(_kInnerR + cornerR, _kArcStartRad);
-    final startOuterCorner = p(_kOuterR - cornerR, _kArcStartRad);
-    final endOuter = p(_kOuterR, _kArcEndRad);
+    final startOuterCorner = p(outerR - cornerR, _kArcStartRad);
+    final endOuter = p(outerR, _kArcEndRad);
     final endInner = p(_kInnerR, _kArcEndRad);
-    final endOuterCorner = p(_kOuterR - cornerR, _kArcEndRad);
+    final endOuterCorner = p(outerR - cornerR, _kArcEndRad);
     final endInnerCorner = p(_kInnerR + cornerR, _kArcEndRad);
     final endInnerAdj = p(_kInnerR, _kArcEndRad - innerDelta);
 
@@ -1626,7 +1908,7 @@ class _Painter extends CustomPainter {
       ..arcTo(
         outerRect,
         _kArcStartRad + outerDelta,
-        _kArcSpanRad - 2 * outerDelta,
+        spanRad - 2 * outerDelta,
         false,
       )
       ..quadraticBezierTo(endOuter.dx, endOuter.dy, endOuterCorner.dx, endOuterCorner.dy)
@@ -1635,7 +1917,7 @@ class _Painter extends CustomPainter {
       ..arcTo(
         innerRect,
         _kArcEndRad - innerDelta,
-        -(_kArcSpanRad - 2 * innerDelta),
+        -(spanRad - 2 * innerDelta),
         false,
       )
       ..quadraticBezierTo(startInner.dx, startInner.dy, startInnerCorner.dx, startInnerCorner.dy)
@@ -1674,7 +1956,7 @@ class _Painter extends CustomPainter {
   List<_LabelLayout> _buildLabels() {
     if (_visible == 0) return const [];
     final labels = <_LabelLayout>[];
-    final midR = (_kInnerR + _kOuterR) / 2;
+    final midR = (_kInnerR + _outerR) / 2;
     for (int i = 0; i < _visible; i++) {
       final idx = ((i + offset) % items.length + items.length) % items.length;
       final item = items[idx];
@@ -1737,7 +2019,7 @@ class _Painter extends CustomPainter {
       ..addArc(
         Rect.fromCircle(
           center: anchor,
-          radius: _kOuterR + 10 * _kLauncherScale,
+          radius: _outerR + 10 * _kLauncherScale,
         ),
         segS,
         _segRad,
@@ -1749,14 +2031,14 @@ class _Painter extends CustomPainter {
     final segS = _kMenuStartRad + slot * _segRad;
     return Path()
       ..moveTo(anchor.dx, anchor.dy)
-      ..addArc(Rect.fromCircle(center: anchor, radius: _kOuterR), segS, _segRad)
+      ..addArc(Rect.fromCircle(center: anchor, radius: _outerR), segS, _segRad)
       ..lineTo(anchor.dx, anchor.dy);
   }
 
   void _drawDivider(Canvas canvas, double rad) {
     canvas.drawLine(
       _point(_kInnerR + 8 * _kLauncherScale, rad),
-      _point(_kOuterR - 14 * _kLauncherScale, rad),
+      _point(_outerR - 14 * _kLauncherScale, rad),
       _dividerPaint,
     );
   }
@@ -1800,7 +2082,7 @@ class _Painter extends CustomPainter {
     canvas.drawPath(_previewTabPath, _previewShadowPaint);
     canvas.drawPath(_previewTabPath, _previewFillPaint);
     canvas.restore();
-    final tc = _tangentPoint(_kOuterR + 40 * _kLauncherScale, 2 * _kLauncherScale, rad);
+    final tc = _tangentPoint(_outerR + 40 * _kLauncherScale, 2 * _kLauncherScale, rad);
     canvas.save();
     canvas.translate(tc.dx, tc.dy);
     canvas.rotate(rad + math.pi);
@@ -1875,5 +2157,6 @@ class _Painter extends CustomPainter {
       old.appIconImages != appIconImages ||
       old.folderIconsList != folderIconsList ||
       old.prevSlot != prevSlot ||
-      old.selectionAnimValue != selectionAnimValue;
+      old.selectionAnimValue != selectionAnimValue ||
+      old.expansionFactor != expansionFactor;
 }

@@ -97,6 +97,15 @@ class WranglNative {
     return raw.map((m) => Map<String, dynamic>.from(m)).toList();
   }
 
+  /// Open the system uninstall screen for the given package.
+  static Future<bool> uninstallApp(String packageName) async {
+    return await _ch.invokeMethod<bool>(
+          'uninstallApp',
+          {'packageName': packageName},
+        ) ??
+        false;
+  }
+
   /// Opens the system file/image picker from the main activity context.
   /// Returns a map with `name` (String) and `bytes` (Uint8List) of the selected file,
   /// or null if the selection was cancelled.

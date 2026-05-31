@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.content.Intent
 import android.graphics.Bitmap
+import android.net.Uri
 import android.graphics.Canvas
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
@@ -240,6 +241,10 @@ class WranglNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
                 result,
             )
             "openHomeSettings" -> openHomeSettings(result)
+            "uninstallApp" -> uninstallApp(
+                call.argument<String>("packageName"),
+                result,
+            )
             else -> result.notImplemented()
         }
     }
@@ -607,6 +612,22 @@ class WranglNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
     private fun openHomeSettings(result: MethodChannel.Result) {
         try {
             val intent = Intent(Settings.ACTION_HOME_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            appContext.startActivity(intent)
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("LAUNCH_FAILED", e.message, null)
+        }
+    }
+
+    private fun uninstallApp(packageName: String?, result: MethodChannel.Result) {
+        if (packageName == null) {
+            result.error("INVALID", "packageName required", null)
+            return
+        }
+        try {
+            val intent = Intent(Intent.ACTION_DELETE, Uri.parse("package:$packageName")).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             appContext.startActivity(intent)
