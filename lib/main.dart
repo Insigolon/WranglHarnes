@@ -133,6 +133,20 @@ const List<IconData> _folderIcons = [
   Icons.flag,
 ];
 
+// ─── Theme constants ─────────────────────────────────────────────────────────
+const _cBg = Color(0xFF1A1A1A);
+const _cText = Color(0xFFF0EFEB);
+const _cGray = Color(0xFF888888);
+const _cAccent = Color(0xFFFF5C35);
+const _cDanger = Color(0xFFFF2200);
+const _cBorder = Color(0xFF444444);
+const _cDivider = Color(0xFF555555);
+const _cDark = Color(0xFF2A2A2A);
+const _cHint = Color(0xFF666666);
+const _cHub = Color(0xFF5C5C5C);
+const _cFill = Color(0xFFD9D9D9);
+const _cBgDark = Color(0xFF0D0D0D);
+
 // ─── Launcher constants ──────────────────────────────────────────────────────
 const double _kArcStart = 160.0;
 const double _kArcEnd = 290.0;
@@ -169,7 +183,7 @@ class RadialLauncher extends StatefulWidget {
 }
 
 class _RadialLauncherState extends State<RadialLauncher>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   // launcher state
   bool _open = false;
   int? _selSlot;
@@ -196,6 +210,12 @@ class _RadialLauncherState extends State<RadialLauncher>
     curve: Curves.easeOutCubic,
   );
 
+  late final AnimationController _selectCtrl = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 150),
+  );
+  int? _prevSelSlot;
+
   final WallpaperService _wallpaper = WallpaperService();
   final WidgetHostService _widgetHost = WidgetHostService();
 
@@ -212,11 +232,22 @@ class _RadialLauncherState extends State<RadialLauncher>
   @override
   void initState() {
     super.initState();
+    _selectCtrl.addStatusListener((status) {
+      if (status == AnimationStatus.completed) {
+        setState(() => _prevSelSlot = _selSlot);
+      }
+    });
+    WidgetsBinding.instance.addObserver(this);
     _loadApps();
     _loadFolders();
     _wallpaper.load();
     _widgetHost.load();
     _widgetHost.addListener(_onWidgetsChanged);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _loadApps();
   }
 
   Future<void> _loadApps() async {
@@ -328,26 +359,19 @@ class _RadialLauncherState extends State<RadialLauncher>
   }
 
   void _showOverlayDeniedDialog() {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        title: const Text(
-          'Overlay Permission Needed',
-          style: TextStyle(color: Color(0xFFF0EFEB)),
-        ),
-        content: const Text(
-          'Wrangl needs "Display over other apps" to show the chat '
-          'overlay. Please enable it in Settings → Display over other apps.',
-          style: TextStyle(color: Color(0xFFF0EFEB)),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('OK', style: TextStyle(color: Color(0xFFFF2200))),
-          ),
-        ],
+    _dialog(
+      title: 'Overlay Permission Needed',
+      content: const Text(
+        'Wrangl needs "Display over other apps" to show the chat '
+        'overlay. Please enable it in Settings → Display over other apps.',
+        style: TextStyle(color: _cText),
       ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('OK', style: TextStyle(color: _cDanger)),
+        ),
+      ],
     );
   }
 
@@ -373,6 +397,7 @@ class _RadialLauncherState extends State<RadialLauncher>
   }
 
   void _toggle() {
+    if (!_open) _loadApps();
     setState(() {
       _open = !_open;
       if (!_open) _selSlot = null;
@@ -413,7 +438,7 @@ class _RadialLauncherState extends State<RadialLauncher>
   }
 
   void _pageByDrag(int d) {
-    if (_pageStopwatch.elapsedMilliseconds < 220) return;
+    if (_pageStopwatch.elapsedMilliseconds < 80) return;
     _pageStopwatch.reset();
     _nudge(d, clearSelection: true);
   }
@@ -448,7 +473,11 @@ class _RadialLauncherState extends State<RadialLauncher>
     final slot = (((ang - _kMenuStartRad) / _kMenuSpanRad) * visible)
         .floor()
         .clamp(0, visible - 1);
-    if (_selSlot != slot) setState(() => _selSlot = slot);
+    if (_selSlot != slot) {
+      _prevSelSlot = _selSlot;
+      setState(() => _selSlot = slot);
+      _selectCtrl.forward(from: 0);
+    }
   }
 
   void _tap(TapDownDetails d, Offset anchor) {
@@ -489,10 +518,11 @@ class _RadialLauncherState extends State<RadialLauncher>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _ctrl.dispose();
+    _selectCtrl.dispose();
     _editCtrl.dispose();
     _wallpaper.dispose();
-    _widgetHost.removeListener(_onWidgetsChanged);
     _widgetHost.dispose();
     super.dispose();
   }
@@ -515,7 +545,7 @@ class _RadialLauncherState extends State<RadialLauncher>
             Container(
               color: _wallpaper.value != null
                   ? Colors.black.withValues(alpha: 0)
-                  : const Color(0xFF0D0D0D),
+                  : _cBgDark,
             ),
             // ── radial launcher ───────────────────────────────────────
             LayoutBuilder(
@@ -541,14 +571,20 @@ class _RadialLauncherState extends State<RadialLauncher>
                             child: FadeTransition(
                               opacity: _anim,
                               child: RepaintBoundary(
-                                child: CustomPaint(
-                                  painter: _Painter(
-                                    anchor: anchor,
-                                    items: _displayItems,
-                                    offset: _offset,
-                                    selectedSlot: _selSlot,
-                                    appIconImages: _appIconImages,
-                                    folderIconsList: _folderIcons,
+                                child: AnimatedBuilder(
+                                  animation: _selectCtrl,
+                                  builder: (context, child) => CustomPaint(
+                                    painter: _Painter(
+                                      anchor: anchor,
+                                      items: _displayItems,
+                                      offset: _offset,
+                                      selectedSlot: _selSlot,
+                                      prevSlot: _prevSelSlot,
+                                      selectionAnimValue: _selectCtrl.value,
+                                      appIconImages: _appIconImages,
+                                      folderIconsList: _folderIcons,
+                                    ),
+                                    child: child!,
                                   ),
                                   child: const SizedBox.expand(),
                                 ),
@@ -582,12 +618,36 @@ class _RadialLauncherState extends State<RadialLauncher>
     );
   }
 
+  // ── shared dialog chrome ────────────────────────────────────────────
+
+  /// Wraps an [AlertDialog] with the app's consistent dark theme.
+  /// [content] and [actions] are placed inside an [AlertDialog] with the
+  /// standard background, shape, title, and text colours.
+  Future<T?> _dialog<T>({
+    required String title,
+    required Widget content,
+    List<Widget> actions = const [],
+  }) {
+    return showDialog<T>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: _cBg,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.all(Radius.circular(16)),
+        ),
+        title: Text(title, style: const TextStyle(color: _cText)),
+        content: content,
+        actions: actions,
+      ),
+    );
+  }
+
   // ── context menu (long-press on empty area) ──────────────────────────
 
   void _showContextMenu() {
     showModalBottomSheet(
       context: context,
-      backgroundColor: const Color(0xFF1A1A1A),
+      backgroundColor: _cBg,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -658,7 +718,7 @@ class _RadialLauncherState extends State<RadialLauncher>
 
     showModalBottomSheet(
       context: context,
-      backgroundColor: const Color(0xFF1A1A1A),
+      backgroundColor: _cBg,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -692,38 +752,25 @@ class _RadialLauncherState extends State<RadialLauncher>
   }
 
   void _confirmRemoveWidget(int appWidgetId, String label) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        title: const Text(
-          'Remove Widget',
-          style: TextStyle(color: Color(0xFFF0EFEB)),
-        ),
-        content: Text(
-          'Remove "$label"?',
-          style: const TextStyle(color: Color(0xFFF0EFEB)),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(color: Color(0xFF888888)),
-            ),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              _widgetHost.remove(appWidgetId);
-            },
-            child: const Text(
-              'Remove',
-              style: TextStyle(color: Color(0xFFFF2200)),
-            ),
-          ),
-        ],
+    _dialog(
+      title: 'Remove Widget',
+      content: Text(
+        'Remove "$label"?',
+        style: const TextStyle(color: _cText),
       ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel', style: TextStyle(color: _cGray)),
+        ),
+        TextButton(
+          onPressed: () {
+            Navigator.of(context).pop();
+            _widgetHost.remove(appWidgetId);
+          },
+          child: const Text('Remove', style: TextStyle(color: _cDanger)),
+        ),
+      ],
     );
   }
 
@@ -732,36 +779,23 @@ class _RadialLauncherState extends State<RadialLauncher>
       'BIND_FAILED' => 'Widget Hosting Not Allowed',
       _ => 'Widget Error ($code)',
     };
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        title: Text(title, style: const TextStyle(color: Color(0xFFF0EFEB))),
-        content: Text(
-          message,
-          style: const TextStyle(color: Color(0xFFF0EFEB)),
+    _dialog(
+      title: title,
+      content: Text(message, style: const TextStyle(color: _cText)),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel', style: TextStyle(color: _cGray)),
         ),
-        actions: [
+        if (code == 'BIND_FAILED')
           TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(color: Color(0xFF888888)),
-            ),
+            onPressed: () {
+              Navigator.of(context).pop();
+              WranglNative.openHomeSettings();
+            },
+            child: const Text('Open Settings', style: TextStyle(color: _cAccent)),
           ),
-          if (code == 'BIND_FAILED')
-            TextButton(
-              onPressed: () {
-                Navigator.pop(ctx);
-                WranglNative.openHomeSettings();
-              },
-              child: const Text(
-                'Open Settings',
-                style: TextStyle(color: Color(0xFFFF5C35)),
-              ),
-            ),
-        ],
-      ),
+      ],
     );
   }
 
@@ -775,7 +809,7 @@ class _RadialLauncherState extends State<RadialLauncher>
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
+        backgroundColor: _cBg,
         shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.all(Radius.circular(16)),
         ),
@@ -783,14 +817,14 @@ class _RadialLauncherState extends State<RadialLauncher>
           children: [
             Icon(
               _folderIcons[folder.iconIndex.clamp(0, _folderIcons.length - 1)],
-              color: const Color(0xFFF0EFEB),
+              color: _cText,
               size: 22,
             ),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
                 folder.name,
-                style: const TextStyle(color: Color(0xFFF0EFEB), fontSize: 18),
+                style: const TextStyle(color: _cText, fontSize: 18),
               ),
             ),
           ],
@@ -803,7 +837,7 @@ class _RadialLauncherState extends State<RadialLauncher>
                   child: Center(
                     child: Text(
                       'Folder is empty',
-                      style: TextStyle(color: Color(0xFF888888)),
+                      style: TextStyle(color: _cGray),
                     ),
                   ),
                 )
@@ -825,19 +859,19 @@ class _RadialLauncherState extends State<RadialLauncher>
                               errorBuilder: (_, __, ___) => const Icon(
                                 Icons.apps,
                                 size: 24,
-                                color: Color(0xFF888888),
+                                color: _cGray,
                               ),
                             ),
                           )
                         : const Icon(
                             Icons.apps,
                             size: 24,
-                            color: Color(0xFF888888),
+                            color: _cGray,
                           ),
                     title: Text(
                       resolved[i].label,
                       style: const TextStyle(
-                        color: Color(0xFFF0EFEB),
+                        color: _cText,
                         fontSize: 15,
                       ),
                     ),
@@ -854,7 +888,7 @@ class _RadialLauncherState extends State<RadialLauncher>
             onPressed: () => Navigator.of(ctx).pop(),
             child: const Text(
               'Close',
-              style: TextStyle(color: Color(0xFFFF5C35)),
+              style: TextStyle(color: _cAccent),
             ),
           ),
         ],
@@ -862,63 +896,59 @@ class _RadialLauncherState extends State<RadialLauncher>
     );
   }
 
-  // ── folder creation ──────────────────────────────────────────────────
+  // ── folder creation / editing ────────────────────────────────────────
+
+  /// Runs the 3-step folder dialog (name → icon → apps) and returns the
+  /// resulting [FolderEntry], or null if the user cancelled at any step.
+  Future<FolderEntry?> _folderDialog({
+    String title = 'Folder Name',
+    String hint = 'e.g. Social',
+    String? initialName,
+    int? initialIcon,
+    List<String> initialApps = const [],
+  }) async {
+    final ctrl = TextEditingController(text: initialName);
+    final name = await _dialog<String>(
+      title: title,
+      content: TextField(
+        controller: ctrl,
+        autofocus: true,
+        style: const TextStyle(color: _cText),
+        decoration: InputDecoration(
+          hintText: hint,
+          hintStyle: const TextStyle(color: _cHint),
+          enabledBorder: const UnderlineInputBorder(
+            borderSide: BorderSide(color: _cDivider),
+          ),
+          focusedBorder: const UnderlineInputBorder(
+            borderSide: BorderSide(color: _cAccent),
+          ),
+        ),
+        onSubmitted: (v) => Navigator.of(context).pop(v.trim()),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel', style: TextStyle(color: _cGray)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(ctrl.text.trim()),
+          child: const Text('Next', style: TextStyle(color: _cAccent)),
+        ),
+      ],
+    );
+    if (name == null || name.isEmpty || !mounted) return null;
+    final iconIdx = await _pickFolderIcon(initialIcon);
+    if (iconIdx == null || !mounted) return null;
+    final pkgs = await _pickFolderApps(initialApps);
+    if (pkgs == null || !mounted) return null;
+    return FolderEntry(name, pkgs, iconIndex: iconIdx);
+  }
 
   Future<void> _createFolder() async {
-    final nameController = TextEditingController();
-    final name = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.all(Radius.circular(16)),
-        ),
-        title: const Text(
-          'Folder Name',
-          style: TextStyle(color: Color(0xFFF0EFEB)),
-        ),
-        content: TextField(
-          controller: nameController,
-          autofocus: true,
-          style: const TextStyle(color: Color(0xFFF0EFEB)),
-          decoration: const InputDecoration(
-            hintText: 'e.g. Social',
-            hintStyle: TextStyle(color: Color(0xFF666666)),
-            enabledBorder: UnderlineInputBorder(
-              borderSide: BorderSide(color: Color(0xFF555555)),
-            ),
-            focusedBorder: UnderlineInputBorder(
-              borderSide: BorderSide(color: Color(0xFFFF5C35)),
-            ),
-          ),
-          onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(color: Color(0xFF888888)),
-            ),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(nameController.text.trim()),
-            child: const Text(
-              'Next',
-              style: TextStyle(color: Color(0xFFFF5C35)),
-            ),
-          ),
-        ],
-      ),
-    );
-    if (name == null || name.isEmpty || !mounted) return;
-    final iconIdx = await _pickFolderIcon(null);
-    if (iconIdx == null || !mounted) return;
-    final pkgs = await _pickFolderApps(const []);
-    if (pkgs == null || !mounted) return;
-    setState(() {
-      _folders = [..._folders, FolderEntry(name, pkgs, iconIndex: iconIdx)];
-    });
+    final folder = await _folderDialog();
+    if (folder == null || !mounted) return;
+    setState(() => _folders = [..._folders, folder]);
     _saveFolders();
   }
 
@@ -931,13 +961,13 @@ class _RadialLauncherState extends State<RadialLauncher>
         var sel = initial;
         return StatefulBuilder(
           builder: (ctx, setInner) => AlertDialog(
-            backgroundColor: const Color(0xFF1A1A1A),
+            backgroundColor: _cBg,
             shape: const RoundedRectangleBorder(
               borderRadius: BorderRadius.all(Radius.circular(16)),
             ),
             title: const Text(
               'Choose Folder Icon',
-              style: TextStyle(color: Color(0xFFF0EFEB)),
+              style: TextStyle(color: _cText),
             ),
             content: SizedBox(
               width: 280,
@@ -956,21 +986,21 @@ class _RadialLauncherState extends State<RadialLauncher>
                     child: Container(
                       decoration: BoxDecoration(
                         color: selected
-                            ? const Color(0xFFFF5C35).withValues(alpha: 0.25)
-                            : const Color(0xFF2A2A2A),
+                            ? _cAccent.withValues(alpha: 0.25)
+                            : _cDark,
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
                           color: selected
-                              ? const Color(0xFFFF5C35)
-                              : const Color(0xFF444444),
+                              ? _cAccent
+                              : _cBorder,
                           width: selected ? 2 : 1,
                         ),
                       ),
                       child: Icon(
                         _folderIcons[i],
                         color: selected
-                            ? const Color(0xFFFF5C35)
-                            : const Color(0xFFF0EFEB),
+                            ? _cAccent
+                            : _cText,
                         size: 28,
                       ),
                     ),
@@ -983,14 +1013,14 @@ class _RadialLauncherState extends State<RadialLauncher>
                 onPressed: () => Navigator.of(ctx).pop(),
                 child: const Text(
                   'Cancel',
-                  style: TextStyle(color: Color(0xFF888888)),
+                  style: TextStyle(color: _cGray),
                 ),
               ),
               TextButton(
                 onPressed: () => Navigator.of(ctx).pop(sel),
                 child: const Text(
                   'Done',
-                  style: TextStyle(color: Color(0xFFFF5C35)),
+                  style: TextStyle(color: _cAccent),
                 ),
               ),
             ],
@@ -1010,13 +1040,13 @@ class _RadialLauncherState extends State<RadialLauncher>
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setInnerState) => AlertDialog(
-          backgroundColor: const Color(0xFF1A1A1A),
+          backgroundColor: _cBg,
           shape: const RoundedRectangleBorder(
             borderRadius: BorderRadius.all(Radius.circular(16)),
           ),
           title: const Text(
             'Select Apps',
-            style: TextStyle(color: Color(0xFFF0EFEB)),
+            style: TextStyle(color: _cText),
           ),
           content: SizedBox(
             width: double.maxFinite,
@@ -1037,23 +1067,23 @@ class _RadialLauncherState extends State<RadialLauncher>
                           errorBuilder: (_, __, ___) => const Icon(
                             Icons.apps,
                             size: 22,
-                            color: Color(0xFF888888),
+                            color: _cGray,
                           ),
                         ),
                       )
                     : const Icon(
                         Icons.apps,
                         size: 22,
-                        color: Color(0xFF888888),
+                        color: _cGray,
                       ),
                 title: Text(
                   sorted[i].label,
                   style: const TextStyle(
-                    color: Color(0xFFF0EFEB),
+                    color: _cText,
                     fontSize: 14,
                   ),
                 ),
-                activeColor: const Color(0xFFFF5C35),
+                activeColor: _cAccent,
                 checkColor: Colors.white,
                 onChanged: (v) {
                   setInnerState(() {
@@ -1072,14 +1102,14 @@ class _RadialLauncherState extends State<RadialLauncher>
               onPressed: () => Navigator.of(ctx).pop(false),
               child: const Text(
                 'Cancel',
-                style: TextStyle(color: Color(0xFF888888)),
+                style: TextStyle(color: _cGray),
               ),
             ),
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(true),
               child: const Text(
                 'Done',
-                style: TextStyle(color: Color(0xFFFF5C35)),
+                style: TextStyle(color: _cAccent),
               ),
             ),
           ],
@@ -1094,37 +1124,24 @@ class _RadialLauncherState extends State<RadialLauncher>
 
   void _manageFolders() {
     if (_folders.isEmpty) {
-      showDialog(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          backgroundColor: const Color(0xFF1A1A1A),
-          shape: const RoundedRectangleBorder(
-            borderRadius: BorderRadius.all(Radius.circular(16)),
-          ),
-          title: const Text(
-            'No Folders',
-            style: TextStyle(color: Color(0xFFF0EFEB)),
-          ),
-          content: const Text(
-            'Tap "Create Folder" to make your first folder.',
-            style: TextStyle(color: Color(0xFF888888)),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text(
-                'OK',
-                style: TextStyle(color: Color(0xFFFF5C35)),
-              ),
-            ),
-          ],
+      _dialog(
+        title: 'No Folders',
+        content: const Text(
+          'Tap "Create Folder" to make your first folder.',
+          style: TextStyle(color: _cGray),
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK', style: TextStyle(color: _cAccent)),
+          ),
+        ],
       );
       return;
     }
     showModalBottomSheet(
       context: context,
-      backgroundColor: const Color(0xFF1A1A1A),
+      backgroundColor: _cBg,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -1142,7 +1159,7 @@ class _RadialLauncherState extends State<RadialLauncher>
                 child: Text(
                   '${_folders.length} folder${_folders.length == 1 ? '' : 's'}',
                   style: const TextStyle(
-                    color: Color(0xFF888888),
+                    color: _cGray,
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
                   ),
@@ -1154,20 +1171,20 @@ class _RadialLauncherState extends State<RadialLauncher>
                 return ListTile(
                   leading: Icon(
                     _folderIcons[f.iconIndex.clamp(0, _folderIcons.length - 1)],
-                    color: const Color(0xFFF0EFEB),
+                    color: _cText,
                     size: 22,
                   ),
                   title: Text(
                     f.name,
                     style: const TextStyle(
-                      color: Color(0xFFF0EFEB),
+                      color: _cText,
                       fontSize: 15,
                     ),
                   ),
                   subtitle: Text(
                     '$count app${count == 1 ? '' : 's'}',
                     style: const TextStyle(
-                      color: Color(0xFF888888),
+                      color: _cGray,
                       fontSize: 12,
                     ),
                   ),
@@ -1177,7 +1194,7 @@ class _RadialLauncherState extends State<RadialLauncher>
                       IconButton(
                         icon: const Icon(
                           Icons.edit_outlined,
-                          color: Color(0xFFF0EFEB),
+                          color: _cText,
                           size: 20,
                         ),
                         onPressed: () {
@@ -1188,7 +1205,7 @@ class _RadialLauncherState extends State<RadialLauncher>
                       IconButton(
                         icon: const Icon(
                           Icons.delete_outline,
-                          color: Color(0xFFFF2200),
+                          color: _cDanger,
                           size: 20,
                         ),
                         onPressed: () {
@@ -1209,64 +1226,18 @@ class _RadialLauncherState extends State<RadialLauncher>
 
   Future<void> _editFolder(int index) async {
     final folder = _folders[index];
-    final nameController = TextEditingController(text: folder.name);
-    final name = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.all(Radius.circular(16)),
-        ),
-        title: const Text(
-          'Rename Folder',
-          style: TextStyle(color: Color(0xFFF0EFEB)),
-        ),
-        content: TextField(
-          controller: nameController,
-          autofocus: true,
-          style: const TextStyle(color: Color(0xFFF0EFEB)),
-          decoration: const InputDecoration(
-            hintText: 'Folder name',
-            hintStyle: TextStyle(color: Color(0xFF666666)),
-            enabledBorder: UnderlineInputBorder(
-              borderSide: BorderSide(color: Color(0xFF555555)),
-            ),
-            focusedBorder: UnderlineInputBorder(
-              borderSide: BorderSide(color: Color(0xFFFF5C35)),
-            ),
-          ),
-          onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(color: Color(0xFF888888)),
-            ),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(nameController.text.trim()),
-            child: const Text(
-              'Next',
-              style: TextStyle(color: Color(0xFFFF5C35)),
-            ),
-          ),
-        ],
-      ),
+    final updated = await _folderDialog(
+      title: 'Rename Folder',
+      hint: 'Folder name',
+      initialName: folder.name,
+      initialIcon: folder.iconIndex,
+      initialApps: folder.packageNames,
     );
-    if (name == null || name.isEmpty || !mounted) return;
-    final iconIdx = await _pickFolderIcon(folder.iconIndex);
-    if (iconIdx == null || !mounted) return;
-    final pkgs = await _pickFolderApps(folder.packageNames);
-    if (pkgs == null || !mounted) return;
+    if (updated == null || !mounted) return;
     setState(() {
       _folders = [
         for (int i = 0; i < _folders.length; i++)
-          if (i == index)
-            FolderEntry(name, pkgs, iconIndex: iconIdx)
-          else
-            _folders[i],
+          if (i == index) updated else _folders[i],
       ];
     });
     _saveFolders();
@@ -1274,38 +1245,22 @@ class _RadialLauncherState extends State<RadialLauncher>
 
   Future<void> _deleteFolder(int index) async {
     final folder = _folders[index];
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.all(Radius.circular(16)),
-        ),
-        title: const Text(
-          'Delete Folder',
-          style: TextStyle(color: Color(0xFFF0EFEB)),
-        ),
-        content: Text(
-          'Delete "${folder.name}"? The apps inside will reappear in your launcher.',
-          style: const TextStyle(color: Color(0xFFF0EFEB)),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(color: Color(0xFF888888)),
-            ),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text(
-              'Delete',
-              style: TextStyle(color: Color(0xFFFF2200)),
-            ),
-          ),
-        ],
+    final confirm = await _dialog<bool>(
+      title: 'Delete Folder',
+      content: Text(
+        'Delete "${folder.name}"? The apps inside will reappear in your launcher.',
+        style: const TextStyle(color: _cText),
       ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancel', style: TextStyle(color: _cGray)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Delete', style: TextStyle(color: _cDanger)),
+        ),
+      ],
     );
     if (confirm != true || !mounted) return;
     setState(() {
@@ -1389,10 +1344,10 @@ class _MenuItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ListTile(
-    leading: Icon(icon, color: const Color(0xFFF0EFEB), size: 22),
+    leading: Icon(icon, color: _cText, size: 22),
     title: Text(
       label,
-      style: const TextStyle(color: Color(0xFFF0EFEB), fontSize: 15),
+      style: const TextStyle(color: _cText, fontSize: 15),
     ),
     onTap: onTap,
     dense: true,
@@ -1487,7 +1442,7 @@ class _Hub extends StatelessWidget {
     height: _kHubR * 2,
     decoration: BoxDecoration(
       shape: BoxShape.circle,
-      color: const Color(0xFF5C5C5C),
+      color: _cHub,
       boxShadow: [
         BoxShadow(
           color: Colors.black.withValues(alpha: 0.5),
@@ -1525,28 +1480,28 @@ class _LabelLayout {
 
 class _Painter extends CustomPainter {
   static final Paint _dividerPaint = Paint()
-    ..color = const Color(0xFF555555)
+    ..color = _cDivider
     ..strokeWidth = 4.5 * _kLauncherScale
     ..strokeCap = StrokeCap.round;
   static final Paint _previewShadowPaint = Paint()
     ..color = Colors.black.withValues(alpha: 0.35)
     ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8 * _kLauncherScale);
   static final Paint _previewFillPaint = Paint()
-    ..color = const Color(0xFFD9D9D9);
+    ..color = _cFill;
   static final Paint _bgShadowPaint = Paint()
     ..color = Colors.black.withValues(alpha: 0.4)
     ..maskFilter = const MaskFilter.blur(
       BlurStyle.normal,
       10 * _kLauncherScale,
     );
-  static final Paint _bgFillPaint = Paint()..color = const Color(0xFFD9D9D9);
+  static final Paint _bgFillPaint = Paint()..color = _cFill;
   static final Paint _selectionGlowPaint = Paint()
-    ..color = const Color(0xFFFF5C35).withValues(alpha: 0.25)
+    ..color = _cAccent.withValues(alpha: 0.25)
     ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8 * _kLauncherScale);
   static final Paint _selectionFillPaint = Paint()
-    ..color = const Color(0xFFFF5C35).withValues(alpha: 0.6);
+    ..color = _cAccent.withValues(alpha: 0.6);
   static final Paint _folderSegmentPaint = Paint()
-    ..color = const Color(0xFF5C5C5C);
+    ..color = _cHub;
   static final Path _previewTabPath = _buildPreviewTabPath();
   static const double _iconSize = 14.0;
   static const double _iconTextGap = 3.0;
@@ -1555,15 +1510,17 @@ class _Painter extends CustomPainter {
   final List<Object> items;
   final int offset;
   final int? selectedSlot;
+  final int? prevSlot;
+  final double selectionAnimValue;
   final Map<String, ui.Image> appIconImages;
   final List<IconData> folderIconsList;
 
   late final int _visible;
   late final double _segRad;
   late final Path _bgPath;
-  late final Path? _selectionPath;
   late final List<_LabelLayout> _labels;
   late final _LabelLayout? _selectedLabel;
+  late final _LabelLayout? _prevLabel;
   late final TextPainter? _previewPainter;
   late final Set<int> _folderSlots;
 
@@ -1572,6 +1529,8 @@ class _Painter extends CustomPainter {
     required this.items,
     required this.offset,
     required this.selectedSlot,
+    required this.prevSlot,
+    required this.selectionAnimValue,
     required this.appIconImages,
     required this.folderIconsList,
   }) {
@@ -1586,9 +1545,12 @@ class _Painter extends CustomPainter {
             selectedSlot! < _labels.length
         ? _labels[selectedSlot!]
         : null;
-    _selectionPath = _selectedLabel == null
-        ? null
-        : _buildSelectionPath(_selectedLabel.slot);
+    _prevLabel =
+        prevSlot != null &&
+            prevSlot! >= 0 &&
+            prevSlot! < _labels.length
+        ? _labels[prevSlot!]
+        : null;
     _previewPainter = _selectedLabel == null
         ? null
         : _createPreviewPainter(_selectedLabel.label);
@@ -1643,41 +1605,43 @@ class _Painter extends CustomPainter {
     const cornerR = 14 * _kLauncherScale;
     const outerDelta = cornerR / _kOuterR;
     const innerDelta = cornerR / _kInnerR;
-    final path = Path();
     final outerRect = Rect.fromCircle(center: anchor, radius: _kOuterR);
     final innerRect = Rect.fromCircle(center: anchor, radius: _kInnerR);
-    final sOA = _pointFor(anchor, _kOuterR, _kArcStartRad + outerDelta);
-    final sO = _pointFor(anchor, _kOuterR, _kArcStartRad);
-    final sI = _pointFor(anchor, _kInnerR, _kArcStartRad);
-    final eO = _pointFor(anchor, _kOuterR, _kArcEndRad);
-    final eI = _pointFor(anchor, _kInnerR, _kArcEndRad);
-    final eOC = _pointFor(anchor, _kOuterR - cornerR, _kArcEndRad);
-    final eIC = _pointFor(anchor, _kInnerR + cornerR, _kArcEndRad);
-    final eIA = _pointFor(anchor, _kInnerR, _kArcEndRad - innerDelta);
-    final sIC = _pointFor(anchor, _kInnerR + cornerR, _kArcStartRad);
-    final sOC = _pointFor(anchor, _kOuterR - cornerR, _kArcStartRad);
-    path
-      ..moveTo(sOA.dx, sOA.dy)
+
+    Offset p(double r, double a) => _pointFor(anchor, r, a);
+
+    final startOuterAdj = p(_kOuterR, _kArcStartRad + outerDelta);
+    final startOuter = p(_kOuterR, _kArcStartRad);
+    final startInner = p(_kInnerR, _kArcStartRad);
+    final startInnerCorner = p(_kInnerR + cornerR, _kArcStartRad);
+    final startOuterCorner = p(_kOuterR - cornerR, _kArcStartRad);
+    final endOuter = p(_kOuterR, _kArcEndRad);
+    final endInner = p(_kInnerR, _kArcEndRad);
+    final endOuterCorner = p(_kOuterR - cornerR, _kArcEndRad);
+    final endInnerCorner = p(_kInnerR + cornerR, _kArcEndRad);
+    final endInnerAdj = p(_kInnerR, _kArcEndRad - innerDelta);
+
+    return Path()
+      ..moveTo(startOuterAdj.dx, startOuterAdj.dy)
       ..arcTo(
         outerRect,
         _kArcStartRad + outerDelta,
         _kArcSpanRad - 2 * outerDelta,
         false,
       )
-      ..quadraticBezierTo(eO.dx, eO.dy, eOC.dx, eOC.dy)
-      ..lineTo(eIC.dx, eIC.dy)
-      ..quadraticBezierTo(eI.dx, eI.dy, eIA.dx, eIA.dy)
+      ..quadraticBezierTo(endOuter.dx, endOuter.dy, endOuterCorner.dx, endOuterCorner.dy)
+      ..lineTo(endInnerCorner.dx, endInnerCorner.dy)
+      ..quadraticBezierTo(endInner.dx, endInner.dy, endInnerAdj.dx, endInnerAdj.dy)
       ..arcTo(
         innerRect,
         _kArcEndRad - innerDelta,
         -(_kArcSpanRad - 2 * innerDelta),
         false,
       )
-      ..quadraticBezierTo(sI.dx, sI.dy, sIC.dx, sIC.dy)
-      ..lineTo(sOC.dx, sOC.dy)
-      ..quadraticBezierTo(sO.dx, sO.dy, sOA.dx, sOA.dy)
+      ..quadraticBezierTo(startInner.dx, startInner.dy, startInnerCorner.dx, startInnerCorner.dy)
+      ..lineTo(startOuterCorner.dx, startOuterCorner.dy)
+      ..quadraticBezierTo(startOuter.dx, startOuter.dy, startOuterAdj.dx, startOuterAdj.dy)
       ..close();
-    return path;
   }
 
   Offset _point(double radius, double angle) =>
@@ -1728,7 +1692,7 @@ class _Painter extends CustomPainter {
             fontWeight: FontWeight.w700,
             color: isSelected
                 ? Colors.white
-                : (isFolder ? Colors.white : const Color(0xFF1A1A1A)),
+                : (isFolder ? Colors.white : _cBg),
             letterSpacing: 0,
           ),
         ),
@@ -1760,15 +1724,14 @@ class _Painter extends CustomPainter {
       style: TextStyle(
         fontSize: 15.5 * _kLabelScale,
         fontWeight: FontWeight.w700,
-        color: const Color(0xFF1A1A1A),
+        color: _cBg,
         letterSpacing: 0,
       ),
     ),
     textDirection: TextDirection.ltr,
   )..layout(maxWidth: 84 * _kLabelScale);
 
-  Path _buildSelectionPath(int slot) {
-    final segS = _kMenuStartRad + slot * _segRad;
+  Path _buildSelectionPathAtAngle(double segS) {
     return Path()
       ..moveTo(anchor.dx, anchor.dy)
       ..addArc(
@@ -1798,59 +1761,54 @@ class _Painter extends CustomPainter {
     );
   }
 
+  void _drawIcon(Canvas canvas, _LabelLayout label, {
+    required double iconSize,
+    required double gap,
+    required double textX,
+    required double textY,
+    required double textHeight,
+    required Color folderIconColor,
+  }) {
+    if (label.appIcon != null) {
+      final img = label.appIcon!;
+      canvas.drawImageRect(
+        img,
+        Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
+        Rect.fromLTWH(textX - iconSize - gap, textY + (textHeight - iconSize) / 2, iconSize, iconSize),
+        Paint()..filterQuality = FilterQuality.low,
+      );
+    } else if (label.folderIcon != null) {
+      final ip = TextPainter(
+        text: TextSpan(
+          text: String.fromCharCode(label.folderIcon!.codePoint),
+          style: TextStyle(fontFamily: 'MaterialIcons', fontSize: iconSize, color: folderIconColor),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      ip.paint(canvas, Offset(textX - iconSize - gap, textY + (textHeight - iconSize) / 2));
+    }
+  }
+
   void _drawPreview(Canvas canvas, _LabelLayout sel, TextPainter pp) {
-    final rad = sel.midRad + _towardTopLean(sel.midRad);
+    final prevMidRad = _prevLabel?.midRad ?? sel.midRad;
+    final currMidRad = sel.midRad;
+    final interpMidRad = prevMidRad + (currMidRad - prevMidRad) * selectionAnimValue;
+    final rad = interpMidRad + _towardTopLean(interpMidRad);
     canvas.save();
     canvas.translate(anchor.dx, anchor.dy);
     canvas.rotate(rad);
     canvas.drawPath(_previewTabPath, _previewShadowPaint);
     canvas.drawPath(_previewTabPath, _previewFillPaint);
     canvas.restore();
-    final tc = _tangentPoint(
-      _kOuterR + 40 * _kLauncherScale,
-      2 * _kLauncherScale,
-      rad,
-    );
+    final tc = _tangentPoint(_kOuterR + 40 * _kLauncherScale, 2 * _kLauncherScale, rad);
     canvas.save();
     canvas.translate(tc.dx, tc.dy);
     canvas.rotate(rad + math.pi);
-    final preIconSize = 18.0 * _kLauncherScale;
-    final preGap = 4.0 * _kLauncherScale;
+    const iconSize = 18.0 * _kLauncherScale;
+    const gap = 4.0 * _kLauncherScale;
     final textX = -pp.width / 2;
     final textY = -pp.height / 2;
-    if (sel.appIcon != null) {
-      final img = sel.appIcon!;
-      canvas.drawImageRect(
-        img,
-        Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
-        Rect.fromLTWH(
-          textX - preIconSize - preGap,
-          textY + (pp.height - preIconSize) / 2,
-          preIconSize,
-          preIconSize,
-        ),
-        Paint()..filterQuality = FilterQuality.low,
-      );
-    } else if (sel.folderIcon != null) {
-      final iconPainter = TextPainter(
-        text: TextSpan(
-          text: String.fromCharCode(sel.folderIcon!.codePoint),
-          style: TextStyle(
-            fontFamily: 'MaterialIcons',
-            fontSize: preIconSize,
-            color: const Color(0xFF1A1A1A),
-          ),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      iconPainter.paint(
-        canvas,
-        Offset(
-          textX - preIconSize - preGap,
-          textY + (pp.height - preIconSize) / 2,
-        ),
-      );
-    }
+    _drawIcon(canvas, sel, iconSize: iconSize, gap: gap, textX: textX, textY: textY, textHeight: pp.height, folderIconColor: _cBg);
     pp.paint(canvas, Offset(textX, textY));
     canvas.restore();
   }
@@ -1864,38 +1822,9 @@ class _Painter extends CustomPainter {
       -label.painter.width / 2,
       -label.painter.height / 2,
     );
-    final scaledIcon = _iconSize * _kLauncherScale;
+    const scaledIcon = _iconSize * _kLauncherScale;
 
-    if (label.appIcon != null) {
-      final img = label.appIcon!;
-      final srcW = img.width.toDouble();
-      final srcH = img.height.toDouble();
-      final iconX = textOffset.dx - scaledIcon - _iconTextGap;
-      final iconY = textOffset.dy + (label.painter.height - scaledIcon) / 2;
-      canvas.drawImageRect(
-        img,
-        Rect.fromLTWH(0, 0, srcW, srcH),
-        Rect.fromLTWH(iconX, iconY, scaledIcon, scaledIcon),
-        Paint()..filterQuality = FilterQuality.low,
-      );
-    } else if (label.folderIcon != null) {
-      final iconPainter = TextPainter(
-        text: TextSpan(
-          text: String.fromCharCode(label.folderIcon!.codePoint),
-          style: TextStyle(
-            fontFamily: 'MaterialIcons',
-            fontSize: scaledIcon,
-            color: label.isFolder && label.slot == (selectedSlot ?? -1)
-                ? Colors.white
-                : const Color(0xFFFFFFFF),
-          ),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      final iconX = textOffset.dx - scaledIcon - _iconTextGap;
-      final iconY = textOffset.dy + (label.painter.height - scaledIcon) / 2;
-      iconPainter.paint(canvas, Offset(iconX, iconY));
-    }
+    _drawIcon(canvas, label, iconSize: scaledIcon, gap: _iconTextGap, textX: textOffset.dx, textY: textOffset.dy, textHeight: label.painter.height, folderIconColor: Colors.white);
 
     label.painter.paint(canvas, textOffset);
     canvas.restore();
@@ -1912,11 +1841,17 @@ class _Painter extends CustomPainter {
       if (slot == selectedSlot) continue;
       canvas.drawPath(_buildFolderSegmentPath(slot), _folderSegmentPaint);
     }
-    if (_selectionPath != null) {
-      final selIsFolder = _selectedLabel!.isFolder;
-      canvas.drawPath(_selectionPath, _selectionGlowPaint);
+    if (selectedSlot != null && _selectedLabel != null) {
+      final selIsFolder = _selectedLabel.isFolder;
+      final prevSegS = _prevLabel != null
+          ? _kMenuStartRad + _prevLabel.slot * _segRad
+          : _kMenuStartRad + selectedSlot! * _segRad;
+      final currSegS = _kMenuStartRad + selectedSlot! * _segRad;
+      final interpSegS = prevSegS + (currSegS - prevSegS) * selectionAnimValue;
+      final interpPath = _buildSelectionPathAtAngle(interpSegS);
+      canvas.drawPath(interpPath, _selectionGlowPaint);
       canvas.drawPath(
-        _selectionPath,
+        interpPath,
         selIsFolder ? _folderSegmentPaint : _selectionFillPaint,
       );
     }
@@ -1938,5 +1873,7 @@ class _Painter extends CustomPainter {
       old.offset != offset ||
       old.selectedSlot != selectedSlot ||
       old.appIconImages != appIconImages ||
-      old.folderIconsList != folderIconsList;
+      old.folderIconsList != folderIconsList ||
+      old.prevSlot != prevSlot ||
+      old.selectionAnimValue != selectionAnimValue;
 }

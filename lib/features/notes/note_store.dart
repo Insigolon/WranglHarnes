@@ -52,7 +52,4 @@ class NoteStore {
     }).toList();
   }
 
-  Future<List<Map<String, dynamic>>> listAll() async {
-    return _loadAll();
-  }
 }

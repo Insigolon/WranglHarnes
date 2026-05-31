@@ -8,9 +8,6 @@ class GemmaModelClient {
 
   GemmaModelClient(this.modelPath);
 
-  /// True once the model was loaded with a working vision encoder.
-  bool get supportsImage => _supportsImage;
-
   /// Load the model. When [withVision] is set we try to enable multimodal image
   /// input; if the model file has no vision encoder that fails, so we
   /// transparently fall back to a text-only load and the chat still works.
