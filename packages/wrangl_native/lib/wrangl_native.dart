@@ -117,4 +117,63 @@ class WranglNative {
       return null;
     }
   }
+
+  // ── VirtualDisplay app windows (requires root) ────────────────────────────
+
+  /// Create a VirtualDisplay for the given app and launch it.
+  /// Returns the display ID on success, -1 on failure.
+  /// Requires: MediaProjection + root access.
+  static Future<int> createAppWindow({
+    required String windowId,
+    required String packageName,
+    int width = 400,
+    int height = 600,
+  }) async {
+    return await _ch.invokeMethod<int>('createAppWindow', {
+      'windowId': windowId,
+      'packageName': packageName,
+      'width': width,
+      'height': height,
+    }) ?? -1;
+  }
+
+  /// Resize a VirtualDisplay for the given app window.
+  static Future<void> resizeAppWindow({
+    required String windowId,
+    required int width,
+    required int height,
+  }) async {
+    await _ch.invokeMethod('resizeAppWindow', {
+      'windowId': windowId,
+      'width': width,
+      'height': height,
+    });
+  }
+
+  /// Inject a touch event into the app's VirtualDisplay via root shell.
+  /// [action]: 0 = down, 1 = up, 2 = move
+  static Future<void> injectTouch({
+    required String windowId,
+    required int x,
+    required int y,
+    int action = 0,
+  }) async {
+    await _ch.invokeMethod('injectTouch', {
+      'windowId': windowId,
+      'x': x,
+      'y': y,
+      'action': action,
+    });
+  }
+
+  /// Close/destroy a VirtualDisplay for the given app window.
+  static Future<void> closeAppWindow(String windowId) async {
+    await _ch.invokeMethod('closeAppWindow', {'windowId': windowId});
+  }
+
+  /// List all active VirtualDisplay window IDs.
+  static Future<List<String>> listAppWindows() async {
+    final raw = await _ch.invokeListMethod<String>('listAppWindows');
+    return raw ?? [];
+  }
 }

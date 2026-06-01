@@ -149,12 +149,16 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
   void _onAgent() {
     if (!mounted) return;
     setState(() {});
-    _scrollCtrl.animateTo(0,
-        duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
+    if (_scrollCtrl.hasClients) {
+      _scrollCtrl.animateTo(0,
+          duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
+    }
     if (_mode == _OverlayMode.notificationBar) _resizeToContent();
   }
 
   void _onSharedData(dynamic event) {
+    _lastAppliedHeight = null;
+    _resizeToContent();
     if (event is! String) return;
     try {
       final data = jsonDecode(event) as Map<String, dynamic>;

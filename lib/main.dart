@@ -11,6 +11,7 @@ import 'package:wrangl_native/wrangl_native.dart';
 import 'agent/model_config.dart';
 import 'overlay/bubble_overlay.dart';
 import 'screens/model_download_screen.dart';
+import 'screens/canvas_screen.dart';
 import 'src/rust/api/simple.dart';
 import 'src/rust/frb_generated.dart';
 import 'features/wallpaper/wallpaper_service.dart';
@@ -98,17 +99,32 @@ void overlayMain() async {
   runApp(const WranglBubbleRoot());
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   final bool modelReady;
   const MyApp({super.key, required this.modelReady});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  late bool _modelReady;
+
+  @override
+  void initState() {
+    super.initState();
+    _modelReady = widget.modelReady;
+  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      // If the model is already downloaded go straight to the launcher;
-      // otherwise show the download screen exactly once.
-      home: modelReady ? const RadialLauncher() : const ModelDownloadScreen(),
+      home: _modelReady
+          ? const CanvasScreen()
+          : ModelDownloadScreen(onModelReady: () {
+              setState(() => _modelReady = true);
+            }),
     );
   }
 }

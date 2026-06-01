@@ -8,7 +8,8 @@ import '../agent/model_config.dart';
 import '../main.dart' show RadialLauncher;
 
 class ModelDownloadScreen extends StatefulWidget {
-  const ModelDownloadScreen({super.key});
+  final VoidCallback? onModelReady;
+  const ModelDownloadScreen({super.key, this.onModelReady});
 
   @override
   State<ModelDownloadScreen> createState() => _ModelDownloadScreenState();
@@ -65,6 +66,7 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen>
 
     if (await file.exists() && await file.length() > ModelConfig.minSize) {
       setState(() => _status = _DlStatus.ready);
+      widget.onModelReady?.call();
       await Future.delayed(const Duration(milliseconds: 600));
       await _startApp();
       return;
@@ -201,9 +203,13 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen>
   }
 
   Future<void> _startApp() async {
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => const RadialLauncher()),
-    );
+    if (widget.onModelReady != null) {
+      widget.onModelReady!();
+    } else {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const RadialLauncher()),
+      );
+    }
   }
 
   String _fmt(int bytes) {

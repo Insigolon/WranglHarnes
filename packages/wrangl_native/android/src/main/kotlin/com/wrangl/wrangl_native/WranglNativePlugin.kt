@@ -88,6 +88,7 @@ class WranglNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
         private var mediaProjection: MediaProjection? = null
         private var consentPendingResult: MethodChannel.Result? = null
         private var pickFilePendingResult: MethodChannel.Result? = null
+        private var virtualDisplayManager: VirtualDisplayManager? = null
 
         // Activity from the launcher engine (the only one that can show the
         // consent dialog). Shared via companion so the overlay isolate's plugin
@@ -114,6 +115,8 @@ class WranglNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
         /** Clean up the stored projection when the user revokes it. */
         @JvmStatic
         fun invalidateProjection() {
+            virtualDisplayManager?.releaseAll()
+            virtualDisplayManager = null
             mediaProjection?.stop()
             mediaProjection = null
         }
@@ -245,6 +248,11 @@ class WranglNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
                 call.argument<String>("packageName"),
                 result,
             )
+            "createAppWindow" -> createAppWindow(call, result)
+            "resizeAppWindow" -> resizeAppWindow(call, result)
+            "injectTouch" -> injectTouch(call, result)
+            "closeAppWindow" -> closeAppWindow(call, result)
+            "listAppWindows" -> listAppWindows(result)
             else -> result.notImplemented()
         }
     }
@@ -391,6 +399,91 @@ class WranglNativePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activ
         } else {
             result.error("CAPTURE_FAILED", "No frame captured", null)
         }
+    }
+
+    // ── VirtualDisplay app windows (requires root) ─────────────────────────────
+
+    private fun ensureVdManager(): VirtualDisplayManager? {
+        if (virtualDisplayManager == null) {
+            val proj = mediaProjection
+            if (proj != null) {
+                virtualDisplayManager = VirtualDisplayManager(appContext, proj)
+            }
+        }
+        return virtualDisplayManager
+    }
+
+    private fun createAppWindow(call: MethodCall, result: MethodChannel.Result) {
+        val mgr = ensureVdManager()
+        if (mgr == null) {
+            result.error("NO_PROJECTION", "MediaProjection not granted", null)
+            return
+        }
+        val windowId = call.argument<String>("windowId") ?: run {
+            result.error("INVALID", "windowId required", null); return
+        }
+        val packageName = call.argument<String>("packageName") ?: run {
+            result.error("INVALID", "packageName required", null); return
+        }
+        val width = call.argument<Int>("width") ?: 400
+        val height = call.argument<Int>("height") ?: 600
+        try {
+            val displayId = mgr.createDisplay(windowId, packageName, width, height)
+            result.success(displayId)
+        } catch (e: Exception) {
+            result.error("CREATE_FAILED", e.message, null)
+        }
+    }
+
+    private fun resizeAppWindow(call: MethodCall, result: MethodChannel.Result) {
+        val mgr = ensureVdManager() ?: run {
+            result.error("NO_PROJECTION", "MediaProjection not granted", null); return
+        }
+        val windowId = call.argument<String>("windowId") ?: run {
+            result.error("INVALID", "windowId required", null); return
+        }
+        val width = call.argument<Int>("width") ?: run {
+            result.error("INVALID", "width required", null); return
+        }
+        val height = call.argument<Int>("height") ?: run {
+            result.error("INVALID", "height required", null); return
+        }
+        mgr.resizeDisplay(windowId, width, height)
+        result.success(null)
+    }
+
+    private fun injectTouch(call: MethodCall, result: MethodChannel.Result) {
+        val mgr = ensureVdManager() ?: run {
+            result.error("NO_PROJECTION", "MediaProjection not granted", null); return
+        }
+        val windowId = call.argument<String>("windowId") ?: run {
+            result.error("INVALID", "windowId required", null); return
+        }
+        val x = call.argument<Int>("x") ?: run {
+            result.error("INVALID", "x required", null); return
+        }
+        val y = call.argument<Int>("y") ?: run {
+            result.error("INVALID", "y required", null); return
+        }
+        val action = call.argument<Int>("action") ?: 0
+        mgr.injectTouch(windowId, x, y, action)
+        result.success(null)
+    }
+
+    private fun closeAppWindow(call: MethodCall, result: MethodChannel.Result) {
+        val mgr = ensureVdManager() ?: run {
+            result.error("NO_PROJECTION", "MediaProjection not granted", null); return
+        }
+        val windowId = call.argument<String>("windowId") ?: run {
+            result.error("INVALID", "windowId required", null); return
+        }
+        mgr.closeDisplay(windowId)
+        result.success(null)
+    }
+
+    private fun listAppWindows(result: MethodChannel.Result) {
+        val mgr = ensureVdManager()
+        result.success(mgr?.getDisplayIds() ?: emptyList<String>())
     }
 
     private fun imageToJpeg(image: android.media.Image): ByteArray {
