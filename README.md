@@ -1,12 +1,12 @@
 # wranglv0
 
-> **An intent-based launcher for Android.** Stop navigating apps — just say what you want done.
+> **An intent-based launcher for Android.** Stop navigating apps — just say what you want done. 
 
 ---
 
 ## The Problem
 
-Every smartphone still works like a filing cabinet. You know what you want to *do*, but you're forced to remember *which app*, *which menu*, *which flow* gets you there.
+Every smartphone still works like a filing cabinet. You know what you want to *do*, but you're forced to remember *which app*, *which menu*, *which flow* gets
 
 WranglHarness flips this. You express intent. The system handles the rest.
 
