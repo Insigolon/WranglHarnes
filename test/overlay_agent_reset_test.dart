@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:wranglv0/agent/harness/harness.dart';
 import 'package:wranglv0/agent/harness/tool.dart';
 import 'package:wranglv0/overlay/overlay_agent.dart';
 
@@ -30,7 +32,7 @@ void main() {
     expect(agent.sessionId, 1);
   });
 
-  test('resetSession cancels an in-flight turn', () {
+  test('resetSession cancels an in-flight turn and clears loading', () {
     final agent = OverlayAgent();
     final token = CancellationToken();
     agent.cancelTokenForTest = token;
@@ -41,8 +43,9 @@ void main() {
     agent.resetSession();
 
     expect(token.isCancelled, isTrue);
-    expect(agent.loading, isTrue,
-        reason: 'resetSession does not flip loading; the in-flight finally does');
+    expect(agent.loading, isFalse,
+        reason:
+            'resetSession must clear loading so the next send is not blocked by an orphaned turn');
     expect(agent.messages, isEmpty);
     expect(agent.sessionId, 1);
   });
@@ -57,4 +60,38 @@ void main() {
 
     expect(notifications, 1);
   });
+
+  test('resetSession during in-flight send drops the late reply', () async {
+    final completer = Completer<String>();
+    Future<String> fakeModel({
+      required String system,
+      required List<Map<String, dynamic>> history,
+      Uint8List? image,
+      int maxTokens = 512,
+    }) =>
+        completer.future;
+    final harness = WranglHarness.load(fakeModel);
+    final agent = OverlayAgent();
+    agent.harnessForTest = harness;
+
+    final sendFuture = agent.send('hello');
+    // Yield so send() can populate messages + enter the await
+    await Future<void>.delayed(Duration.zero);
+    expect(agent.messages.length, 1);
+    expect(agent.loading, isTrue);
+
+    agent.resetSession();
+    expect(agent.messages, isEmpty);
+    expect(agent.loading, isFalse,
+        reason: 'next send should be allowed after reset');
+
+    // The model eventually finishes — but the reply is for the old session.
+    completer.complete('late reply');
+    await sendFuture;
+
+    expect(agent.messages, isEmpty,
+        reason: 'late reply must not be added to the new session');
+    expect(agent.sessionId, 1);
+  });
 }
+

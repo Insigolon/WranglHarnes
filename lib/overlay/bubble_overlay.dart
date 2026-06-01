@@ -169,15 +169,16 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
 
   void _autoSendWhenReady(String text) {
     if (_agent.ready && !_agent.loading) {
-      _send();
+      unawaited(_send());
       return;
     }
-    late final VoidCallback l;
-    l = () {
-      _agent.removeListener(l);
-      if (_agent.ready && !_agent.loading && _input.text == text) _send();
-    };
-    _agent.addListener(l);
+    void onChange() {
+      _agent.removeListener(onChange);
+      if (_agent.ready && !_agent.loading && _input.text == text) {
+        unawaited(_send());
+      }
+    }
+    _agent.addListener(onChange);
   }
 
   void _onAssist(Map<String, dynamic> payload) {
@@ -193,35 +194,47 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
   Future<void> _enterSelection() async {
     if (_busy || _mode == _OverlayMode.selecting) return;
     _busy = true;
-    final fs = _screenDp;
-    await FlutterOverlayWindow.resizeOverlay(
-      fs.width.round(),
-      fs.height.round(),
-      false,
-    );
-    await FlutterOverlayWindow.updateFlag(OverlayFlag.defaultFlag);
-    if (mounted)
-      setState(() {
-        _mode = _OverlayMode.selecting;
-        _lassoPoints = [];
-        _cropRect = null;
-      });
-    _busy = false;
+    try {
+      final fs = _screenDp;
+      await FlutterOverlayWindow.resizeOverlay(
+        fs.width.round(),
+        fs.height.round(),
+        false,
+      );
+      await FlutterOverlayWindow.updateFlag(OverlayFlag.defaultFlag);
+      if (mounted) {
+        setState(() {
+          _mode = _OverlayMode.selecting;
+          _lassoPoints = [];
+          _cropRect = null;
+        });
+      }
+    } catch (e) {
+      debugPrint('[selection] enter failed: $e');
+    } finally {
+      _busy = false;
+    }
   }
 
   Future<void> _exitSelection() async {
     if (_busy) return;
     _busy = true;
-    await FlutterOverlayWindow.updateFlag(OverlayFlag.focusPointer);
-    if (mounted)
-      setState(() {
-        _mode = _OverlayMode.notificationBar;
-        _screenshot = null;
-        _lassoPoints = [];
-        _cropRect = null;
-      });
-    _resizeToContent();
-    _busy = false;
+    try {
+      await FlutterOverlayWindow.updateFlag(OverlayFlag.focusPointer);
+      if (mounted) {
+        setState(() {
+          _mode = _OverlayMode.notificationBar;
+          _screenshot = null;
+          _lassoPoints = [];
+          _cropRect = null;
+        });
+      }
+      _resizeToContent();
+    } catch (e) {
+      debugPrint('[selection] exit failed: $e');
+    } finally {
+      _busy = false;
+    }
   }
 
   void _onLassoStart(DragStartDetails d) {
@@ -258,12 +271,27 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
   Future<void> _cropAndSend() async {
     if (_screenshot == null || _cropRect == null) return;
     final viewSize = MediaQuery.sizeOf(context);
-    final completer = Completer<ui.Image>();
-    ui.decodeImageFromList(
-      Uint8List.fromList(_screenshot!),
-      completer.complete,
-    );
-    final image = await completer.future;
+    final ui.Image image;
+    try {
+      final codec = await ui.instantiateImageCodec(
+        Uint8List.fromList(_screenshot!),
+      );
+      final frame = await codec.getNextFrame();
+      image = frame.image;
+    } catch (e) {
+      debugPrint('[crop] failed to decode screenshot: $e');
+      if (mounted) {
+        setState(() {
+          _mode = _OverlayMode.notificationBar;
+          _screenshot = null;
+          _lassoPoints = [];
+          _cropRect = null;
+        });
+      }
+      await FlutterOverlayWindow.updateFlag(OverlayFlag.focusPointer);
+      _resizeToContent();
+      return;
+    }
     final scaleX = image.width / viewSize.width;
     final scaleY = image.height / viewSize.height;
     final src = Rect.fromLTWH(
@@ -281,7 +309,9 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
       dstSz.height.toInt(),
     );
     final bytes = await cropped.toByteData(format: ui.ImageByteFormat.png);
-    if (bytes != null) _agent.pendingImage = bytes.buffer.asUint8List();
+    if (bytes != null && _input.text.isNotEmpty) {
+      _agent.pendingImage = bytes.buffer.asUint8List();
+    }
     await FlutterOverlayWindow.updateFlag(OverlayFlag.focusPointer);
     if (mounted)
       setState(() {
@@ -291,31 +321,32 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
         _cropRect = null;
       });
     _agent.ensureLoaded();
-    if (_input.text.isNotEmpty) _send();
+    if (_input.text.isNotEmpty) await _send();
     _resizeToContent();
   }
 
   // ── send ──────────────────────────────────────────────────────────────────
 
-  void _send() {
+  Future<void> _send() async {
     var text = _input.text.trim();
     if (text.isEmpty) return;
     _input.clear();
     if (text.startsWith('/exp')) {
       text = text.substring(4).trim();
       if (text.isEmpty) text = 'Describe what is on my screen';
-      _captureAndSend(text);
+      await _captureAndSend(text);
       return;
     }
-    _agent.send(text, image: _agent.pendingImage);
+    final image = _agent.pendingImage;
     _agent.pendingImage = null;
+    await _agent.send(text, image: image);
   }
 
   Future<void> _captureAndSend(String prompt) async {
     try {
-      _agent.send(prompt, image: await WranglNative.captureScreen());
+      await _agent.send(prompt, image: await WranglNative.captureScreen());
     } catch (e) {
-      _agent.send('/exp failed: $e');
+      await _agent.send('/exp failed: $e');
     }
   }
 
@@ -588,7 +619,7 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
                                   isDense: true,
                                   contentPadding: EdgeInsets.zero,
                                 ),
-                                onSubmitted: (_) => _send(),
+                                onSubmitted: (_) => unawaited(_send()),
                               ),
                             ),
                             GestureDetector(
@@ -616,7 +647,7 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
 
                     // send button
                     GestureDetector(
-                      onTap: _send,
+                      onTap: () => unawaited(_send()),
                       child: Container(
                         width: 46,
                         height: 46,

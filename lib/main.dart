@@ -24,13 +24,25 @@ class _OverlayPermission {
   _OverlayPermission._();
   static const _ch = MethodChannel('wrangl/overlay_permission');
 
-  static Future<bool> isGranted() async =>
-      (await _ch.invokeMethod<bool>('check')) ?? false;
+  static Future<bool> isGranted() async {
+    try {
+      return (await _ch.invokeMethod<bool>('check')) ?? false;
+    } catch (e) {
+      debugPrint('[overlay] permission check failed: $e');
+      return false;
+    }
+  }
 
   /// Opens the system "Display over other apps" page and returns `true` only
   /// after the user has granted the permission and returned to the app.
-  static Future<bool> request() async =>
-      (await _ch.invokeMethod<bool>('request')) ?? false;
+  static Future<bool> request() async {
+    try {
+      return (await _ch.invokeMethod<bool>('request')) ?? false;
+    } catch (e) {
+      debugPrint('[overlay] permission request failed: $e');
+      return false;
+    }
+  }
 }
 
 class _AppLauncher {

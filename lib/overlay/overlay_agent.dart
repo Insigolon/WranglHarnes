@@ -16,6 +16,12 @@ class OverlayAgent extends ChangeNotifier {
   GemmaModelClient? _client;
   WranglHarness? _harness;
 
+  @visibleForTesting
+  set harnessForTest(WranglHarness? h) {
+    _harness = h;
+    ready = h != null;
+  }
+
   Uint8List? pendingImage;
   bool loading = false;
   bool booting = false;
@@ -75,6 +81,9 @@ class OverlayAgent extends ChangeNotifier {
 
   Future<void> send(String text, {Uint8List? image}) async {
     if (!ready || _harness == null || loading) return;
+    // Snapshot the session so post-await mutations are no-ops if a
+    // [resetSession] has wiped the slate while we were awaiting the model.
+    final sessionAtStart = sessionId;
     final prior = messages
         .map(
           (m) => <String, dynamic>{
@@ -95,17 +104,19 @@ class OverlayAgent extends ChangeNotifier {
         image: image,
         priorTurns: prior,
         onStep: (_) {
-          notifyListeners();
+          if (sessionId == sessionAtStart) notifyListeners();
         },
         cancelToken: token,
       );
       if (token.isCancelled) return;
+      if (sessionId != sessionAtStart) return;
       messages.add(OverlayMsg(false, reply, thinking: lastThink));
     } catch (e) {
       if (token.isCancelled) return;
+      if (sessionId != sessionAtStart) return;
       messages.add(OverlayMsg(false, 'Error: $e'));
     } finally {
-      if (identical(_cancelToken, token)) {
+      if (identical(_cancelToken, token) && sessionId == sessionAtStart) {
         loading = false;
         notifyListeners();
       }
@@ -114,13 +125,16 @@ class OverlayAgent extends ChangeNotifier {
 
   /// Cancel any in-flight turn and clear the conversation log. The model
   /// client stays resident — only the session state goes away. A pending
-  /// image attached to a future send is also dropped.
+  /// image attached to a future send is also dropped. [loading] is forced
+  /// back to `false` so the next send isn't blocked by an orphaned turn
+  /// whose `finally` block now refuses to flip it.
   void resetSession() {
     if (loading) _cancelToken.cancel();
     messages.clear();
     pendingImage = null;
     lastThink = null;
     error = null;
+    loading = false;
     sessionId++;
     notifyListeners();
   }
