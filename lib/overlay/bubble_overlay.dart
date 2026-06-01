@@ -70,43 +70,56 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Resize strategy
+  //  Resize strategy
   //
   // _buildBar wraps its content in an OverflowBox so the capsule measures at
   // its natural (unclipped) height regardless of the current overlay window
-  // size.  After the first frame we read the capsule's natural height, resize
-  // the native window to fit, then re-measure once more after the layout
-  // settles (the second measurement almost always matches the first).
+  // size.  After each frame we read the capsule's natural height, resize the
+  // native window to fit, and keep re-measuring until two consecutive reads
+  // are equal (settled) or we hit the max-iteration guard.  This catches
+  // late layout passes from image decode, streaming replies, etc.
   // ─────────────────────────────────────────────────────────────────────────
+  static const int _kResizeMaxIter = 5;
+  int? _lastAppliedHeight;
+
   void _resizeToContent() {
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      int? h = _measure();
-      if (h == null) {
-        _resizeToContent();
-        return;
-      }
-      await FlutterOverlayWindow.resizeOverlay(360, h, false);
-      // Re-measure after the resize takes effect.
-      WidgetsBinding.instance.addPostFrameCallback((__) async {
+      _settleResize(0);
+    });
+  }
+
+  Future<void> _settleResize(int iter) async {
+    if (!mounted) return;
+    if (iter >= _kResizeMaxIter) return;
+    final int? h = _measure();
+    if (h == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
-        int? h2 = _measure();
-        if (h2 != null && h2 != h) {
-          await FlutterOverlayWindow.resizeOverlay(360, h2, false);
-        }
+        _settleResize(iter + 1);
       });
+      return;
+    }
+    if (_lastAppliedHeight == h) return;
+    await FlutterOverlayWindow.resizeOverlay(360, h, false);
+    _lastAppliedHeight = h;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _settleResize(iter + 1);
     });
   }
 
   /// Reads the capsule's current render height and returns the total overlay
-  /// height (content + padding + safety margin) or null if not ready.
+  /// height (content + padding + safety margin) clamped to the device screen
+  /// height, or null if the layout isn't ready yet.
   int? _measure() {
     final ctx = _colKey.currentContext;
     if (ctx == null) return null;
     final box = ctx.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize) return null;
     const outerTopPad = 12.0;
-    return (box.size.height + outerTopPad + _kWindowVPad).ceil();
+    final raw = box.size.height + outerTopPad + _kWindowVPad;
+    final screenH = _screenDp.height;
+    return raw.clamp(0, screenH).ceil();
   }
 
   // ── lifecycle ─────────────────────────────────────────────────────────────
@@ -410,51 +423,59 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
 
   Widget _buildRecordingUI(BuildContext context) => Container(
     color: Colors.black.withValues(alpha: 0.90),
-    child: Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.mic, color: _kRed, size: 56),
-          const SizedBox(height: 24),
-          const Text(
-            'Listening…',
-            style: TextStyle(
-              color: _kWhite,
-              fontSize: 18,
-              fontWeight: FontWeight.w700,
-              fontFamily: 'monospace',
+    child: SafeArea(
+      child: SingleChildScrollView(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.mic, color: _kRed, size: 56),
+                const SizedBox(height: 24),
+                const Text(
+                  'Listening…',
+                  style: TextStyle(
+                    color: _kWhite,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Tap to stop',
+                  style: TextStyle(
+                    color: _kWhite.withValues(alpha: 0.4),
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                OutlinedButton.icon(
+                  onPressed: _stopOverlayRecording,
+                  icon: const Icon(Icons.stop, size: 16),
+                  label: const Text(
+                    'STOP',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.1,
+                    ),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: _kWhite.withValues(alpha: 0.6),
+                    side: BorderSide(color: _kWhite.withValues(alpha: 0.2)),
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
-          const SizedBox(height: 8),
-          Text(
-            'Tap to stop',
-            style: TextStyle(
-              color: _kWhite.withValues(alpha: 0.4),
-              fontSize: 12,
-            ),
-          ),
-          const SizedBox(height: 48),
-          OutlinedButton.icon(
-            onPressed: _stopOverlayRecording,
-            icon: const Icon(Icons.stop, size: 16),
-            label: const Text(
-              'STOP',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 1.1,
-              ),
-            ),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: _kWhite.withValues(alpha: 0.6),
-              side: BorderSide(color: _kWhite.withValues(alpha: 0.2)),
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(24),
-              ),
-            ),
-          ),
-        ],
+        ),
       ),
     ),
   );
@@ -462,8 +483,9 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
   // ─────────────────────────────────────────────────────────────────────────
   //  Hybrid capsule bar with conversation history
   //
-  //  - Idle: single compact row (status • input • send)
-  //  - Messages: scrollable history appears ABOVE the row (max 6 turns)
+  //  - Idle: messages (if any) + input row only
+  //  - Busy: a slim status banner appears between messages and the input
+  //  - Status is a free-floating row above the input, not packed into it
   //
   //  The tree is:
   //    Align(topCenter)
@@ -471,12 +493,17 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
   //           └─ Material(key: _colKey)
   //                └─ Container(width: 360, pad: 10v)
   //                     └─ Column(mainAxisSize: min)
-  //                          ├─ [_buildMessages() — scrollable, max 6]
+  //                          ├─ [_buildMessages() — scrollable, max 55% screen]
   //                          ├─ SizedBox(8)
-  //                          └─ Row (always) [status • input • send]
+  //                          ├─ [_buildStatusBar() — only when busy]
+  //                          ├─ SizedBox(6) — only when busy
+  //                          └─ Row [reset • input • send]
   // ─────────────────────────────────────────────────────────────────────────
   Widget _buildBar(BuildContext context) {
     final isBusy = _agent.loading || _agent.booting;
+    final hasMessages = _agent.messages.isNotEmpty;
+    final screenH = _screenDp.height;
+    final messagesCap = math.min(320.0, screenH * 0.55);
 
     return OverflowBox(
       alignment: Alignment.topCenter,
@@ -507,34 +534,30 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 // ── conversation messages ────────────────
-                if (_agent.messages.isNotEmpty) ...[
-                  _buildMessages(),
+                if (hasMessages) ...[
+                  ConstrainedBox(
+                    constraints: BoxConstraints(maxHeight: messagesCap),
+                    child: _buildMessages(),
+                  ),
                   const SizedBox(height: 8),
                 ],
 
-                // ── single compact row ──────────────────
+                // ── status banner (only when busy) ───────
+                if (isBusy) ...[
+                  _buildStatusBar(context),
+                  const SizedBox(height: 6),
+                ],
+
+                // ── single compact row [reset • input • send] ──
                 Row(
                   children: [
-                    // status
-                    Row(
-                      children: [
-                        const Text(
-                          '✦ ',
-                          style: TextStyle(color: _kWhite, fontSize: 14),
-                        ),
-                        Text(
-                          isBusy ? 'Running agents' : 'Ready',
-                          style: const TextStyle(
-                            color: _kWhite,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            fontFamily: 'monospace',
-                          ),
-                        ),
-                      ],
-                    ),
+                    // reset session button (only when there's something to reset)
+                    if (_canReset())
+                      _buildResetButton()
+                    else
+                      const SizedBox(width: 0),
 
-                    const SizedBox(width: 12),
+                    if (_canReset()) const SizedBox(width: 8),
 
                     // input capsule
                     Expanded(
@@ -553,6 +576,8 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
                             Expanded(
                               child: TextField(
                                 controller: _input,
+                                maxLines: 1,
+                                textInputAction: TextInputAction.send,
                                 cursorColor: _kWhite,
                                 style: const TextStyle(
                                   color: _kWhite,
@@ -560,7 +585,10 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
                                 ),
                                 decoration: const InputDecoration(
                                   border: InputBorder.none,
+                                  isDense: true,
+                                  contentPadding: EdgeInsets.zero,
                                 ),
+                                onSubmitted: (_) => _send(),
                               ),
                             ),
                             GestureDetector(
@@ -613,6 +641,141 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
     );
   }
 
+  bool _canReset() =>
+      _agent.messages.isNotEmpty || _agent.pendingImage != null;
+
+  Widget _buildResetButton() {
+    return Semantics(
+      label: 'New session',
+      button: true,
+      child: GestureDetector(
+        onTap: _confirmResetDialog,
+        child: Container(
+          width: 32,
+          height: 32,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: _kPill,
+            border: Border.all(
+              color: Colors.white.withValues(alpha: 0.15),
+            ),
+          ),
+          child: Icon(
+            Icons.refresh,
+            size: 16,
+            color: _kWhite.withValues(alpha: 0.6),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatusBar(BuildContext context) {
+    final isBooting = _agent.booting;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: _kPill,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            width: 12,
+            height: 12,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              valueColor: AlwaysStoppedAnimation<Color>(
+                _kWhite.withValues(alpha: 0.7),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              isBooting ? 'Loading model…' : 'Running agents…',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: _kWhite,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                fontFamily: 'monospace',
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _confirmResetDialog() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: _kBg,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'New session?',
+                style: TextStyle(
+                  color: _kWhite,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  fontFamily: 'monospace',
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'This will clear the current conversation.',
+                style: TextStyle(color: _kWhite, fontSize: 13),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.of(ctx).pop(false),
+                    child: const Text(
+                      'Cancel',
+                      style: TextStyle(color: Color(0xFF888888)),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  TextButton(
+                    onPressed: () => Navigator.of(ctx).pop(true),
+                    child: const Text(
+                      'Reset',
+                      style: TextStyle(
+                        color: Color(0xFFFF2200),
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (ok != true || !mounted) return;
+    _agent.resetSession();
+    _input.clear();
+    _lastAppliedHeight = null;
+    _resizeToContent();
+  }
+
   // ───────────────────────────────────────────────────────────────────────────
   //  Scrollable bubble-chat history
   //  Shows up to the 6 most recent turns inside a capped scroll box.
@@ -635,50 +798,62 @@ class _BubbleSurfaceState extends State<_BubbleSurface> {
             child: Align(
               alignment:
                   msg.fromUser ? Alignment.centerRight : Alignment.centerLeft,
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: msg.fromUser
-                      ? _kWhite.withValues(alpha: 0.9)
-                      : _kPill,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: msg.fromUser
-                    ? Text(
-                        msg.text,
-                        style: const TextStyle(
-                          color: _kBg,
-                          fontSize: 12,
-                          height: 1.35,
-                        ),
-                      )
-                    : Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (msg.thinking != null) ...[
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 320),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: msg.fromUser
+                        ? _kWhite.withValues(alpha: 0.9)
+                        : _kPill,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: msg.fromUser
+                      ? Text(
+                          msg.text,
+                          maxLines: 6,
+                          softWrap: true,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: _kBg,
+                            fontSize: 12,
+                            height: 1.35,
+                          ),
+                        )
+                      : Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (msg.thinking != null) ...[
+                              Text(
+                                msg.thinking!,
+                                maxLines: 4,
+                                softWrap: true,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: _kWhite.withValues(alpha: 0.5),
+                                  fontSize: 11,
+                                  fontStyle: FontStyle.italic,
+                                  height: 1.35,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                            ],
                             Text(
-                              msg.thinking!,
-                              style: TextStyle(
-                                color: _kWhite.withValues(alpha: 0.5),
-                                fontSize: 11,
-                                fontStyle: FontStyle.italic,
+                              msg.text,
+                              maxLines: 6,
+                              softWrap: true,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: _kWhite,
+                                fontSize: 12,
                                 height: 1.35,
                               ),
                             ),
-                            const SizedBox(height: 4),
                           ],
-                          Text(
-                            msg.text,
-                            style: const TextStyle(
-                              color: _kWhite,
-                              fontSize: 12,
-                              height: 1.35,
-                            ),
-                          ),
-                        ],
-                      ),
+                        ),
+                ),
               ),
             ),
           );

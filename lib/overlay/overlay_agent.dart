@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../agent/gemma_client.dart';
 import '../agent/harness/harness.dart';
+import '../agent/harness/tool.dart';
 import '../agent/model_config.dart';
 
 class OverlayMsg {
@@ -22,6 +23,15 @@ class OverlayAgent extends ChangeNotifier {
   String? error;
   String? lastThink;
   final List<OverlayMsg> messages = [];
+
+  /// Monotonic id bumped on every [resetSession] so views can key off it.
+  int sessionId = 0;
+
+  /// Token passed to the in-flight harness call so [resetSession] can cancel.
+  CancellationToken _cancelToken = CancellationToken.none;
+
+  @visibleForTesting
+  set cancelTokenForTest(CancellationToken token) => _cancelToken = token;
 
   Future<void> ensureLoaded() async {
     if (ready || booting) return;
@@ -75,6 +85,8 @@ class OverlayAgent extends ChangeNotifier {
         .toList();
     messages.add(OverlayMsg(true, text));
     loading = true;
+    _cancelToken = CancellationToken();
+    final token = _cancelToken;
     notifyListeners();
     lastThink = null;
     try {
@@ -85,14 +97,32 @@ class OverlayAgent extends ChangeNotifier {
         onStep: (_) {
           notifyListeners();
         },
+        cancelToken: token,
       );
+      if (token.isCancelled) return;
       messages.add(OverlayMsg(false, reply, thinking: lastThink));
     } catch (e) {
+      if (token.isCancelled) return;
       messages.add(OverlayMsg(false, 'Error: $e'));
     } finally {
-      loading = false;
-      notifyListeners();
+      if (identical(_cancelToken, token)) {
+        loading = false;
+        notifyListeners();
+      }
     }
+  }
+
+  /// Cancel any in-flight turn and clear the conversation log. The model
+  /// client stays resident — only the session state goes away. A pending
+  /// image attached to a future send is also dropped.
+  void resetSession() {
+    if (loading) _cancelToken.cancel();
+    messages.clear();
+    pendingImage = null;
+    lastThink = null;
+    error = null;
+    sessionId++;
+    notifyListeners();
   }
 
   @override
